@@ -1,0 +1,8 @@
+services:
+  waxid:
+    build: .
+    ports:
+      - "8457:8457"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

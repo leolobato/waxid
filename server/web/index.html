@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WaxID</title>
+  <link rel="stylesheet" href="/web/css/style.css">
+</head>
+<body x-data="waxidApp()" x-init="init()">
+
+  <!-- ========== NOW PLAYING VIEW ========== -->
+  <div x-show="view === 'nowplaying'" class="np-container" x-cloak>
+    <!-- Background blur -->
+    <div class="np-background"
+         :style="(nowPlaying?.status === 'playing' && nowPlaying?.cover_url)
+           ? `background-image: url(${nowPlaying.cover_url})`
+           : (nowPlaying?.status === 'listening' && lastPlaying?.cover_url)
+             ? `background-image: url(${lastPlaying.cover_url})`
+             : ''">
+    </div>
+    <div class="np-overlay"></div>
+
+    <!-- Gear button -->
+    <button class="gear-button" @click="view = 'library'; loadAlbums()" title="Open Library">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+    </button>
+
+    <!-- Active state -->
+    <div class="np-content" x-show="nowPlaying?.status === 'playing'" x-transition>
+      <div class="np-artwork-wrap">
+        <template x-if="nowPlaying?.cover_url">
+          <img class="np-artwork"
+               :src="nowPlaying.cover_url"
+               :alt="nowPlaying.album || ''">
+        </template>
+        <template x-if="!nowPlaying?.cover_url">
+          <div class="np-artwork np-artwork-placeholder">
+            <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </div>
+        </template>
+      </div>
+      <div class="np-meta">
+        <div class="np-track" x-text="nowPlaying?.track"></div>
+        <div class="np-artist" x-text="nowPlaying?.artist"></div>
+        <div class="np-album" x-text="nowPlaying?.album"></div>
+        <div class="np-vinyl-info" x-show="nowPlaying?.side || nowPlaying?.position || nowPlaying?.year">
+          <span x-show="nowPlaying?.side" x-text="'Side ' + (nowPlaying?.side || '')"></span>
+          <span x-show="nowPlaying?.side && nowPlaying?.position" class="np-dot">&middot;</span>
+          <span x-show="nowPlaying?.position" x-text="'Track ' + (nowPlaying?.position || '')"></span>
+          <span x-show="(nowPlaying?.side || nowPlaying?.position) && nowPlaying?.year" class="np-dot">&middot;</span>
+          <span x-show="nowPlaying?.year" x-text="nowPlaying?.year"></span>
+        </div>
+        <div class="np-elapsed" x-show="displayElapsed != null && nowPlaying?.duration_s">
+          <div class="np-progress">
+            <div class="np-progress-fill" :style="`width: ${Math.min(100, (displayElapsed / nowPlaying?.duration_s) * 100)}%`"></div>
+          </div>
+          <div class="np-elapsed-text">
+            <span x-text="formatDuration(displayElapsed)"></span>
+            <span class="np-duration-sep"> / </span>
+            <span x-text="formatDuration(nowPlaying?.duration_s)"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Listening state (with last album) -->
+    <div class="np-content" x-show="nowPlaying?.status === 'listening' && lastPlaying" x-transition>
+      <div class="np-artwork-wrap">
+        <template x-if="lastPlaying?.cover_url">
+          <img class="np-artwork"
+               :src="lastPlaying.cover_url"
+               :alt="lastPlaying.album || ''">
+        </template>
+        <template x-if="!lastPlaying?.cover_url">
+          <div class="np-artwork np-artwork-placeholder">
+            <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </div>
+        </template>
+      </div>
+      <div class="np-meta">
+        <div class="np-artist" x-text="lastPlaying?.artist"></div>
+        <div class="np-album" x-text="lastPlaying?.album"></div>
+        <div class="np-listening-label">Listening...</div>
+      </div>
+    </div>
+
+    <!-- Listening state (no previous album) -->
+    <div class="np-idle" x-show="nowPlaying?.status === 'listening' && !lastPlaying" x-transition>
+      <div class="np-vinyl-icon">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"></circle>
+          <circle cx="12" cy="12" r="3"></circle>
+          <line x1="12" y1="2" x2="12" y2="5" opacity="0.2"></line>
+          <line x1="12" y1="19" x2="12" y2="22" opacity="0.2"></line>
+        </svg>
+      </div>
+      <div class="np-listening">Listening...</div>
+    </div>
+
+    <!-- Idle state -->
+    <div class="np-idle" x-show="!nowPlaying || nowPlaying?.status === 'idle'" x-transition>
+      <div class="np-vinyl-icon">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"></circle>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </div>
+      <div class="np-listening">Not Playing</div>
+    </div>
+
+    <!-- Listen toggle (Android client only) -->
+    <button class="listen-toggle"
+            x-show="isAndroidClient"
+            @click="toggleListening()"
+            :class="clientListening ? 'listen-toggle-active' : ''"
+            x-cloak>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path x-show="!clientListening" d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+        <path x-show="!clientListening" d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+        <line x-show="!clientListening" x1="12" y1="19" x2="12" y2="23"></line>
+        <line x-show="!clientListening" x1="8" y1="23" x2="16" y2="23"></line>
+        <rect x-show="clientListening" x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+      </svg>
+      <span x-text="clientListening ? 'Stop Listening' : 'Start Listening'"></span>
+    </button>
+  </div>
+
+  <!-- ========== LIBRARY VIEW ========== -->
+  <div x-show="view === 'library'" class="admin-container" x-cloak>
+    <header class="admin-header">
+      <div class="admin-header-left">
+        <button class="btn btn-icon" @click="view = 'nowplaying'" title="Now Playing">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <h1 class="admin-title">Library</h1>
+      </div>
+      <div class="admin-header-right">
+        <div class="view-toggle">
+          <button class="btn btn-sm" :class="libraryView === 'grid' ? 'btn-active' : ''" @click="libraryView = 'grid'" title="Grid view">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+            </svg>
+          </button>
+          <button class="btn btn-sm" :class="libraryView === 'list' ? 'btn-active' : ''" @click="libraryView = 'list'" title="List view">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="8" y1="6" x2="21" y2="6"></line>
+              <line x1="8" y1="12" x2="21" y2="12"></line>
+              <line x1="8" y1="18" x2="21" y2="18"></line>
+              <line x1="3" y1="6" x2="3.01" y2="6"></line>
+              <line x1="3" y1="12" x2="3.01" y2="12"></line>
+              <line x1="3" y1="18" x2="3.01" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <button class="btn btn-accent" @click="view = 'uploading'; uploadResult = null; uploading = false;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="16 16 12 12 8 16"></polyline>
+            <line x1="12" y1="12" x2="12" y2="21"></line>
+            <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+          </svg>
+          Upload
+        </button>
+        <button class="btn" @click="view = 'settings'">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Settings
+        </button>
+        <button class="btn" x-show="isAndroidClient" @click="openAppSettings()" x-cloak>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          App Settings
+        </button>
+      </div>
+    </header>
+
+    <!-- Search bar -->
+    <div class="search-bar">
+      <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text"
+             class="search-input"
+             x-model="searchQuery"
+             placeholder="Filter by artist, album, or year...">
+      <button class="search-clear" x-show="searchQuery" @click="searchQuery = ''" x-cloak>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Album count -->
+    <div class="album-count">
+      <span x-text="searchQuery.trim()
+        ? filteredAlbums.length + ' of ' + albums.length + ' album' + (albums.length !== 1 ? 's' : '')
+        : albums.length + ' album' + (albums.length !== 1 ? 's' : '')"></span>
+    </div>
+
+    <!-- Grid View -->
+    <div class="album-grid" x-show="libraryView === 'grid'">
+      <template x-for="album in sortedAlbums" :key="album.album_id">
+        <div class="album-card" @click="openAlbum(album.album_id)">
+          <div class="album-card-cover">
+            <img :src="album.cover_path ? `/albums/${album.album_id}/cover` : ''"
+                 :alt="album.name"
+                 x-show="album.cover_path">
+            <div class="album-card-cover-placeholder" x-show="!album.cover_path">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+                <circle cx="12" cy="12" r="10"></circle>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </div>
+          </div>
+          <div class="album-card-info">
+            <div class="album-card-name" x-text="album.name"></div>
+            <div class="album-card-artist" x-text="album.artist"></div>
+            <div class="album-card-meta" x-text="album.track_count + ' track' + (album.track_count !== 1 ? 's' : '')"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- List View -->
+    <div class="album-list" x-show="libraryView === 'list'">
+      <table>
+        <thead>
+          <tr>
+            <th class="cover-cell"></th>
+            <th class="sortable" @click="sortBy('artist')">
+              Artist <span class="sort-indicator" x-text="sortIndicator('artist')"></span>
+            </th>
+            <th class="sortable" @click="sortBy('name')">
+              Album <span class="sort-indicator" x-text="sortIndicator('name')"></span>
+            </th>
+            <th class="sortable" @click="sortBy('year')">
+              Year <span class="sort-indicator" x-text="sortIndicator('year')"></span>
+            </th>
+            <th class="sortable" @click="sortBy('track_count')">
+              Tracks <span class="sort-indicator" x-text="sortIndicator('track_count')"></span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="album in sortedAlbums" :key="album.album_id">
+            <tr @click="openAlbum(album.album_id)" class="clickable-row">
+              <td class="cover-cell">
+                <img :src="album.cover_path ? `/albums/${album.album_id}/cover` : ''"
+                     x-show="album.cover_path"
+                     class="cover-thumb">
+                <div class="cover-thumb-placeholder" x-show="!album.cover_path">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                </div>
+              </td>
+              <td x-text="album.artist"></td>
+              <td x-text="album.name"></td>
+              <td x-text="album.year || '—'"></td>
+              <td x-text="album.track_count"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ========== ALBUM DETAIL VIEW ========== -->
+  <div x-show="view === 'album-detail'" class="admin-container" x-cloak>
+    <header class="admin-header">
+      <div class="admin-header-left">
+        <button class="btn btn-icon" @click="view = 'library'" title="Back to Library">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <h1 class="admin-title" x-text="albumDetail?.name || 'Album'"></h1>
+      </div>
+      <div class="admin-header-right">
+        <button class="btn btn-danger" @click="deleteAlbum()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          Delete Album
+        </button>
+      </div>
+    </header>
+
+    <div class="album-detail-top" x-show="albumDetail">
+      <!-- Cover Art -->
+      <div class="album-detail-cover">
+        <img :src="albumDetail?.cover_path ? `/albums/${albumDetail.album_id}/cover` : ''"
+             :alt="albumDetail?.name"
+             x-show="albumDetail?.cover_path"
+             class="album-detail-cover-img">
+        <div class="album-detail-cover-placeholder" x-show="!albumDetail?.cover_path">
+          <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+            <circle cx="12" cy="12" r="10"></circle>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </div>
+        <label class="btn btn-sm btn-cover-replace">
+          Replace Cover
+          <input type="file" accept="image/jpeg,image/png" @change="uploadCover($event)" hidden>
+        </label>
+      </div>
+
+      <!-- Edit Form -->
+      <div class="album-detail-form">
+        <div class="form-group">
+          <label>Artist</label>
+          <input type="text" x-model="editForm.artist" class="form-input">
+        </div>
+        <div class="form-group">
+          <label>Album Name</label>
+          <input type="text" x-model="editForm.name" class="form-input">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Year</label>
+            <input type="number" x-model.number="editForm.year" class="form-input" placeholder="—">
+          </div>
+          <div class="form-group form-group-wide">
+            <label>Discogs URL</label>
+            <input type="url" x-model="editForm.discogs_url" class="form-input" placeholder="https://discogs.com/release/...">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-accent" @click="saveAlbum()">Save Changes</button>
+          <span class="edit-message" x-text="editMessage" :class="editMessage.startsWith('Error') ? 'text-danger' : 'text-success'"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tracks Table -->
+    <div class="tracks-section" x-show="albumDetail">
+      <div class="tracks-header">
+        <h2 class="section-title">Tracks <span class="section-count" x-text="albumDetail?.tracks?.length || 0"></span></h2>
+        <div class="tracks-header-actions">
+          <template x-if="!addingTracks">
+            <label class="btn btn-accent add-tracks-btn">
+              Add Tracks
+              <input type="file" multiple accept=".mp3,.flac,.wav" @change="addTracksToAlbum($event.target.files)" hidden>
+            </label>
+          </template>
+          <template x-if="addingTracks">
+            <span class="add-tracks-progress" x-text="`Ingesting ${addTracksProgress}/${addTracksTotal}...`"></span>
+          </template>
+        </div>
+      </div>
+      <table class="tracks-table">
+        <thead>
+          <tr>
+            <th class="col-num">#</th>
+            <th class="col-side">Side</th>
+            <th class="col-pos">Pos</th>
+            <th>Title</th>
+            <th class="col-duration">Duration</th>
+            <th class="col-hashes">Hashes</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="track in albumDetail?.tracks || []" :key="track.track_id">
+            <tr class="track-row" :class="deletingTracks.has(track.track_id) ? 'track-deleting' : ''" @click="openTrackEdit(track)">
+              <td class="col-num" x-text="track.track_number || '—'"></td>
+              <td class="col-side" x-text="track.side || '—'"></td>
+              <td class="col-pos" x-text="track.position || '—'"></td>
+              <td x-text="track.track"></td>
+              <td class="col-duration" x-text="track.duration_s ? formatDuration(track.duration_s) : '—'"></td>
+              <td class="col-hashes" x-text="track.num_hashes"></td>
+              <td class="col-actions" @click.stop>
+                <template x-if="deletingTracks.has(track.track_id)">
+                  <span class="spinner"></span>
+                </template>
+                <template x-if="!deletingTracks.has(track.track_id)">
+                  <button class="btn btn-icon btn-danger-icon" @click="deleteTrack(track.track_id)" title="Delete track">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                  </button>
+                </template>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Track Edit Modal -->
+    <div class="modal-overlay" x-show="editingTrack" x-transition.opacity @click.self="editingTrack = null" x-cloak>
+      <div class="modal" @click.stop>
+        <div class="modal-header">
+          <h3>Edit Track</h3>
+          <button class="btn btn-icon" @click="editingTrack = null" title="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <label>Title<input type="text" x-model="trackEditForm.track"></label>
+          <label>Track Number<input type="number" x-model.number="trackEditForm.track_number"></label>
+          <label>Side<input type="text" x-model="trackEditForm.side" placeholder="e.g. A, B"></label>
+          <label>Position<input type="text" x-model="trackEditForm.position" placeholder="e.g. A1, B3"></label>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="editingTrack = null">Cancel</button>
+          <button class="btn btn-accent" @click="saveTrack()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== UPLOAD VIEW ========== -->
+  <div x-show="view === 'uploading'" class="admin-container" x-cloak>
+    <header class="admin-header">
+      <div class="admin-header-left">
+        <button class="btn btn-icon" @click="view = 'library'" title="Back to Library">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <h1 class="admin-title">Upload</h1>
+      </div>
+    </header>
+
+    <!-- Drop Zone -->
+    <div class="upload-zone"
+         :class="dragOver ? 'upload-zone-active' : ''"
+         @dragover.prevent="dragOver = true"
+         @dragleave.prevent="dragOver = false"
+         @drop.prevent="handleDrop($event)"
+         x-show="!uploading && !uploadResult">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
+        <polyline points="16 16 12 12 8 16"></polyline>
+        <line x1="12" y1="12" x2="12" y2="21"></line>
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+      </svg>
+      <p class="upload-text">Drop audio files or ZIP archives here</p>
+      <p class="upload-subtext">MP3, FLAC, WAV, or ZIP containing audio files</p>
+      <label class="btn btn-accent upload-browse">
+        Browse Files
+        <input type="file" multiple accept=".mp3,.flac,.wav,.zip" @change="handleFiles($event.target.files)" hidden>
+      </label>
+    </div>
+
+    <!-- Progress -->
+    <div class="upload-progress" x-show="uploading">
+      <div class="progress-label">Uploading and processing...</div>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner" :style="`width: ${uploadProgress}%`"></div>
+      </div>
+      <div class="progress-percent" x-text="uploadProgress + '%'"></div>
+    </div>
+
+    <!-- Results -->
+    <div class="upload-results" x-show="uploadResult && !uploading">
+      <div class="upload-results-summary">
+        <div class="result-stat">
+          <span class="result-number" x-text="uploadResult?.albums_created || 0"></span>
+          <span class="result-label">Albums Created</span>
+        </div>
+        <div class="result-stat">
+          <span class="result-number" x-text="uploadResult?.tracks_ingested || 0"></span>
+          <span class="result-label">Tracks Ingested</span>
+        </div>
+      </div>
+      <div class="upload-errors" x-show="uploadResult?.errors?.length > 0">
+        <h3>Errors</h3>
+        <template x-for="err in uploadResult?.errors || []" :key="err.file">
+          <div class="error-item">
+            <span class="error-file" x-text="err.file"></span>
+            <span class="error-message" x-text="err.error"></span>
+          </div>
+        </template>
+      </div>
+      <button class="btn btn-accent" @click="uploadResult = null; uploading = false;">Upload More</button>
+    </div>
+
+    <!-- Documentation -->
+    <div class="upload-docs">
+      <h2>How Ingestion Works</h2>
+      <p>This system fingerprints audio files so it can identify vinyl records playing in real-time. Upload your music files here to build the fingerprint database.</p>
+
+      <h3>Supported Formats</h3>
+      <ul>
+        <li><strong>Audio files:</strong> MP3, FLAC, or WAV. Each file is fingerprinted and stored as a track.</li>
+        <li><strong>ZIP archives:</strong> A zip file is treated as one album. It can contain audio files and an optional text file with a Discogs URL.</li>
+      </ul>
+
+      <h3>Metadata from Audio Tags</h3>
+      <p>Track metadata is read automatically from audio file tags (ID3 for MP3, Vorbis comments for FLAC). The following tags are used:</p>
+      <ul>
+        <li><strong>Album Artist / Artist:</strong> Used to identify the album. The <code>albumartist</code> tag is preferred; falls back to <code>artist</code>.</li>
+        <li><strong>Album:</strong> The album name. Tracks with the same artist + album are grouped together.</li>
+        <li><strong>Title:</strong> The track name. If missing, the filename is used.</li>
+        <li><strong>Track Number:</strong> For ordering. Handles "3/12" format.</li>
+        <li><strong>Date / Year:</strong> The release year (first 4 digits are used).</li>
+      </ul>
+      <p>If tags are missing, tracks are filed under "Unknown Artist" / "Unknown Album". You can edit this in the album detail view after upload.</p>
+
+      <h3>Discogs URL</h3>
+      <p>To link an album to its <a href="https://www.discogs.com" target="_blank" rel="noopener">Discogs</a> release page, include a <code>.txt</code> or <code>.md</code> file in your ZIP archive containing the Discogs release URL, e.g.:</p>
+      <pre>https://www.discogs.com/release/12345-Artist-Album-Name</pre>
+      <p>This is optional but useful for reference. The URL is stored with the album and visible in the album detail view.</p>
+
+      <h3>Tips</h3>
+      <ul>
+        <li>For best results, use lossless files (FLAC or WAV) ripped from your vinyl records.</li>
+        <li>The fingerprinting works with any audio quality, but higher quality means more reliable matching.</li>
+        <li>You can upload multiple files or ZIPs at once.</li>
+        <li>Cover art is extracted automatically from image files in the ZIP (named <code>cover</code>, <code>front</code>, <code>folder</code>, or <code>artwork</code>) or from embedded audio tags. You can also replace it manually in the album detail view.</li>
+        <li>Side and position info (e.g., "Side A, Track 2") is automatically populated from Discogs when a Discogs link is included in the ZIP (via a <code>.txt</code> or <code>.md</code> file). You can also edit side/position manually in the album detail view.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ========== SETTINGS VIEW ========== -->
+  <div x-show="view === 'settings'" class="admin-container" x-cloak>
+    <header class="admin-header">
+      <div class="admin-header-left">
+        <button class="btn btn-icon" @click="view = 'library'" title="Back to Library">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <h1 class="admin-title">Settings</h1>
+      </div>
+    </header>
+
+    <div class="settings-content">
+      <div class="settings-section">
+        <h2 class="settings-section-title">Roon Now Playing</h2>
+        <p class="settings-section-desc">Push now-playing updates to a <a href="https://github.com/arthursoares/roon-now-playing" target="_blank" rel="noopener">Roon Now Playing</a> display when a record is identified.</p>
+
+        <div class="settings-toggle-row">
+          <label class="settings-toggle-label">Enabled</label>
+          <button class="toggle-switch" :class="settingsForm.roon_enabled ? 'toggle-on' : ''"
+                  @click="settingsForm.roon_enabled = !settingsForm.roon_enabled">
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+
+        <div class="settings-fields" :class="!settingsForm.roon_enabled ? 'settings-disabled' : ''">
+          <div class="form-group">
+            <label>Roon Now Playing URL</label>
+            <input type="url" x-model="settingsForm.roon_url" class="form-input"
+                   placeholder="http://10.0.1.9:8377"
+                   :disabled="!settingsForm.roon_enabled">
+          </div>
+          <div class="form-group">
+            <label>Zone Name</label>
+            <input type="text" x-model="settingsForm.roon_zone_name" class="form-input"
+                   placeholder="Record Player"
+                   :disabled="!settingsForm.roon_enabled">
+          </div>
+          <div class="form-group">
+            <label>WaxID Server URL</label>
+            <input type="url" x-model="settingsForm.server_url" class="form-input"
+                   placeholder="http://localhost:8457"
+                   :disabled="!settingsForm.roon_enabled">
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-accent" @click="saveSettings()" :disabled="settingsSaving">
+            <span x-text="settingsSaving ? 'Saving...' : 'Save'"></span>
+          </button>
+          <span class="edit-message"
+                x-text="settingsMessage"
+                :class="settingsMessage.startsWith('Error') ? 'text-danger' : 'text-success'"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script defer src="/web/js/app.js"></script>
+  <script defer src="/web/js/alpine.min.js"></script>
+</body>
+</html>
