@@ -5,8 +5,8 @@ A local "Shazam" for record collection. Place a tablet next to your turntable an
 WaxID fingerprints your personal vinyl collection and matches live audio from the turntable microphone against it. No cloud services, everything runs locally on your network.
 
 <p>
-  <img src="docs/screenshots/now-playing.png" width="49%" alt="Now Playing">
-  <img src="docs/screenshots/library.png" width="49%" alt="Library">
+  <img src="screenshots/now-playing.png" width="49%" alt="Now Playing">
+  <img src="screenshots/library.png" width="49%" alt="Library">
 </p>
 
 ## How It Works
