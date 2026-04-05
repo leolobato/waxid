@@ -57,7 +57,8 @@ VERSION = os.environ.get("GIT_COMMIT", "dev")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, _settings, _data_dir, _roon_notifier
-    print(f"WaxID Server starting (commit: {VERSION})")
+    hash_limit = CONFIG.max_query_hashes or "unlimited"
+    print(f"WaxID Server starting (commit: {VERSION}, max_query_hashes: {hash_limit})")
     db_path = _get_db_path()
     data_dir = Path(db_path).parent
     data_dir.mkdir(parents=True, exist_ok=True)

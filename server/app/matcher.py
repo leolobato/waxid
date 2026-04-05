@@ -4,9 +4,6 @@ from collections import defaultdict
 from .config import CONFIG
 from .db import Database
 
-MAX_QUERY_HASHES = 500
-
-
 def match_hashes(
     query_hashes: list[tuple[int, int]], db: Database
 ) -> list[dict]:
@@ -20,8 +17,8 @@ def match_hashes(
     if not query_hashes:
         return []
 
-    if len(query_hashes) > MAX_QUERY_HASHES:
-        query_hashes = random.sample(query_hashes, MAX_QUERY_HASHES)
+    if CONFIG.max_query_hashes > 0 and len(query_hashes) > CONFIG.max_query_hashes:
+        query_hashes = random.sample(query_hashes, CONFIG.max_query_hashes)
 
     hash_values = [h for h, _ in query_hashes]
     query_time_map: dict[int, list[int]] = defaultdict(list)

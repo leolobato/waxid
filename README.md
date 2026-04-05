@@ -38,6 +38,23 @@ docker-compose up -d
 
 Open `http://localhost:8457` to access the web UI. The `data/` directory stores the fingerprint database, album covers, and settings.
 
+### Configuration
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `WAXID_DB_PATH` | `./data/fingerprints.db` | Path to the SQLite database |
+| `WAXID_MAX_QUERY_HASHES` | `0` (unlimited) | Cap the number of query hashes per match. Set to `500` for faster matching on low-power hardware at the cost of some accuracy. `0` uses all hashes. |
+
+Example with Docker Compose:
+
+```yaml
+services:
+  waxid:
+    image: ghcr.io/leolobato/waxid:latest
+    environment:
+      - WAXID_MAX_QUERY_HASHES=500
+```
+
 ### Web UI
 
 The web UI lets you see what's currently playing in real-time with album art and track info, browse and manage your music library, and upload new albums for ingestion. Server settings (like Roon integration) are also configured here.
