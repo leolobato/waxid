@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 @dataclass(frozen=True)
@@ -15,10 +16,18 @@ class FingerprintConfig:
     freq_delta_bias: int = 31
     match_win: int = 2
     min_count: int = 15
+    max_query_hashes: int = 0  # 0 = unlimited; positive value caps query hashes for faster matching
     max_results: int = 5
 
     @property
     def frame_duration_s(self) -> float:
         return self.hop_length / self.sample_rate
 
-CONFIG = FingerprintConfig()
+def _load_config() -> FingerprintConfig:
+    overrides = {}
+    env_val = os.environ.get("WAXID_MAX_QUERY_HASHES")
+    if env_val is not None:
+        overrides["max_query_hashes"] = int(env_val)
+    return FingerprintConfig(**overrides)
+
+CONFIG = _load_config()
