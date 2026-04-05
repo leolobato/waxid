@@ -50,6 +50,11 @@ function waxidApp() {
     settingsMessage: '',
     settingsSaving: false,
 
+    // Last.fm
+    lastfm: { available: false, connected: false, username: null },
+    lastfmConnecting: false,
+    lastfmWaitingApproval: false,
+
     init() {
       this.connectSSE();
       this.loadAlbums();
@@ -72,6 +77,7 @@ function waxidApp() {
         }
         if (val === 'settings') {
           this.loadSettings();
+          this.loadLastfmStatus();
         }
       });
     },
@@ -376,6 +382,63 @@ function waxidApp() {
         console.error('Failed to load settings:', e);
       }
       this.settingsMessage = '';
+    },
+
+    async loadLastfmStatus() {
+      try {
+        const r = await fetch('/lastfm/status');
+        if (r.ok) {
+          this.lastfm = await r.json();
+        }
+      } catch (e) {
+        console.error('Failed to load Last.fm status:', e);
+      }
+    },
+
+    async connectLastfm() {
+      this.lastfmConnecting = true;
+      try {
+        const r = await fetch('/lastfm/auth-url');
+        if (!r.ok) throw new Error('Failed to get auth URL');
+        const { url } = await r.json();
+        window.open(url, '_blank');
+        this.lastfmWaitingApproval = true;
+      } catch (e) {
+        this.settingsMessage = 'Error connecting to Last.fm';
+      }
+      this.lastfmConnecting = false;
+    },
+
+    async completeLastfm() {
+      this.lastfmConnecting = true;
+      try {
+        const r = await fetch('/lastfm/callback', { method: 'POST' });
+        if (r.ok) {
+          const data = await r.json();
+          this.lastfm = { available: true, connected: true, username: data.username };
+          this.lastfmWaitingApproval = false;
+          this.settingsMessage = `Connected to Last.fm as ${data.username}!`;
+        } else {
+          const err = await r.json();
+          this.settingsMessage = `Error: ${err.detail}`;
+        }
+      } catch (e) {
+        this.settingsMessage = 'Error completing Last.fm connection';
+      }
+      this.lastfmConnecting = false;
+    },
+
+    async disconnectLastfm() {
+      try {
+        const r = await fetch('/lastfm/disconnect', { method: 'POST' });
+        if (r.ok) {
+          this.lastfm = { available: true, connected: false, username: null };
+          this.lastfmWaitingApproval = false;
+          this.settingsMessage = 'Disconnected from Last.fm';
+        }
+      } catch (e) {
+        this.settingsMessage = 'Error disconnecting from Last.fm';
+      }
     },
 
     async saveSettings() {

@@ -22,6 +22,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Inject Last.fm keys
+        run: |
+          echo '{"api_key":"${{ secrets.LASTFM_API_KEY }}","secret":"${{ secrets.LASTFM_SECRET }}"}' \
+            > server/app/lastfm_keys.json
+
       - uses: docker/build-push-action@v6
         with:
           context: server

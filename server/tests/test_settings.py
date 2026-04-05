@@ -11,6 +11,9 @@ class TestSettingsModel:
         assert s.roon_url == ""
         assert s.roon_zone_name == "Record Player"
         assert s.server_url == "http://localhost:8457"
+        assert s.lastfm_session_key == ""
+        assert s.lastfm_username == ""
+        assert s.lastfm_enabled is False
 
 
 class TestLoadSettings:
@@ -60,3 +63,15 @@ class TestSaveSettings:
         save_settings(tmp_path, Settings())
         data = json.loads((tmp_path / "settings.json").read_text())
         assert "roon_enabled" in data
+
+    def test_lastfm_round_trip(self, tmp_path):
+        original = Settings(
+            lastfm_enabled=True,
+            lastfm_session_key="abc123session",
+            lastfm_username="testuser",
+        )
+        save_settings(tmp_path, original)
+        loaded = load_settings(tmp_path)
+        assert loaded.lastfm_enabled is True
+        assert loaded.lastfm_session_key == "abc123session"
+        assert loaded.lastfm_username == "testuser"

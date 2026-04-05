@@ -595,6 +595,35 @@
                 :class="settingsMessage.startsWith('Error') ? 'text-danger' : 'text-success'"></span>
         </div>
       </div>
+
+      <div class="settings-section" x-show="lastfm.available" x-cloak>
+        <h2 class="settings-section-title">Last.fm Scrobbling</h2>
+        <p class="settings-section-desc">Automatically scrobble identified tracks to your <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a> profile.</p>
+
+        <template x-if="!lastfm.connected && !lastfmWaitingApproval">
+          <div>
+            <button class="btn btn-accent" @click="connectLastfm()" :disabled="lastfmConnecting">
+              <span x-text="lastfmConnecting ? 'Connecting...' : 'Connect to Last.fm'"></span>
+            </button>
+          </div>
+        </template>
+
+        <template x-if="lastfmWaitingApproval && !lastfm.connected">
+          <div>
+            <p class="settings-section-desc">Approve the connection on Last.fm, then click below:</p>
+            <button class="btn btn-accent" @click="completeLastfm()" :disabled="lastfmConnecting">
+              <span x-text="lastfmConnecting ? 'Verifying...' : 'Complete Connection'"></span>
+            </button>
+          </div>
+        </template>
+
+        <template x-if="lastfm.connected">
+          <div>
+            <p class="settings-section-desc">Connected as <strong x-text="lastfm.username"></strong></p>
+            <button class="btn btn-danger" @click="disconnectLastfm()">Disconnect</button>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 
