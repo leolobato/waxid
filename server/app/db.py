@@ -171,20 +171,26 @@ class Database:
                 result[row[0]].append((row[1], row[2]))
         return dict(result)
 
-    def lookup_hashes_flat(self, hash_values: list[int], batch_size: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def lookup_hashes_flat(self, hash_values: list[int], batch_size: int = 8000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return DB matches as flat numpy arrays (hashes, track_ids, t_frames)."""
         if not hash_values:
             empty = np.empty(0, dtype=np.int64)
             return empty, empty, empty
+        # Use a dedicated cursor to avoid Row factory overhead
+        cur = self.conn.cursor()
+        cur.row_factory = None
         all_rows = []
-        for i in range(0, len(hash_values), batch_size):
-            batch = hash_values[i:i + batch_size]
-            placeholders = ",".join("?" for _ in batch)
-            rows = self.conn.execute(
-                f"SELECT hash, track_id, t_frame FROM hashes WHERE hash IN ({placeholders})",
-                batch,
-            ).fetchall()
-            all_rows.extend(rows)
+        try:
+            for i in range(0, len(hash_values), batch_size):
+                batch = hash_values[i:i + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                rows = cur.execute(
+                    f"SELECT hash, track_id, t_frame FROM hashes WHERE hash IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                all_rows.extend(rows)
+        finally:
+            cur.close()
         if not all_rows:
             empty = np.empty(0, dtype=np.int64)
             return empty, empty, empty

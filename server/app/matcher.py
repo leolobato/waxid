@@ -28,11 +28,11 @@ def match_hashes(
 
     t0 = time.perf_counter()
 
-    hash_values = [h for h, _ in query_hashes]
     q_arr = np.array(query_hashes, dtype=np.int64)  # columns: hash, t_q
     q_hashes = q_arr[:, 0]
     q_times = q_arr[:, 1]
 
+    hash_values = q_hashes.tolist()
     db_hashes, db_track_ids, db_t_frames = db.lookup_hashes_flat(hash_values)
     t_lookup = time.perf_counter()
 
