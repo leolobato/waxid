@@ -1,8 +1,12 @@
 from __future__ import annotations
+import logging
 import random
+import time
 from collections import defaultdict
 from .config import CONFIG
 from .db import Database
+
+logger = logging.getLogger(__name__)
 
 def match_hashes(
     query_hashes: list[tuple[int, int]], db: Database
@@ -20,12 +24,15 @@ def match_hashes(
     if CONFIG.max_query_hashes > 0 and len(query_hashes) > CONFIG.max_query_hashes:
         query_hashes = random.sample(query_hashes, CONFIG.max_query_hashes)
 
+    t0 = time.perf_counter()
+
     hash_values = [h for h, _ in query_hashes]
     query_time_map: dict[int, list[int]] = defaultdict(list)
     for h, t_q in query_hashes:
         query_time_map[h].append(t_q)
 
     db_matches = db.lookup_hashes(hash_values)
+    t_lookup = time.perf_counter()
 
     # Offset voting: count (track_id, offset) pairs
     votes: dict[tuple[int, int], int] = defaultdict(int)
@@ -36,7 +43,10 @@ def match_hashes(
                 votes[(track_id, offset)] += 1
 
     if not votes:
+        logger.debug("match: lookup=%.1fms, 0 votes", (t_lookup - t0) * 1000)
         return []
+
+    t_voting = time.perf_counter()
 
     # Group votes by track_id, sum neighborhoods first, then threshold
     track_offsets: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
@@ -54,7 +64,11 @@ def match_hashes(
             if track_id not in track_best or total > track_best[track_id][0]:
                 track_best[track_id] = (total, offset)
 
+    t_scoring = time.perf_counter()
+
     if not track_best:
+        logger.debug("match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, no results",
+                      (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000, (t_scoring - t_voting) * 1000)
         return []
 
     sorted_tracks = sorted(track_best.items(), key=lambda x: x[1][0], reverse=True)
@@ -94,4 +108,9 @@ def match_hashes(
             "cover_url": cover_url,
         })
 
+    t_end = time.perf_counter()
+    logger.debug("match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, total=%.1fms (%d hashes, %d results)",
+                 (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000,
+                 (t_scoring - t_voting) * 1000, (t_end - t0) * 1000,
+                 len(hash_values), len(results))
     return results

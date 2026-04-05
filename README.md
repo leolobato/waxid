@@ -44,6 +44,7 @@ Open `http://localhost:8457` to access the web UI. The `data/` directory stores 
 |---|---|---|
 | `WAXID_DB_PATH` | `./data/fingerprints.db` | Path to the SQLite database |
 | `WAXID_MAX_QUERY_HASHES` | `0` (unlimited) | Cap the number of query hashes per match. Set to `500` for faster matching on low-power hardware at the cost of some accuracy. `0` uses all hashes. |
+| `WAXID_LOG_LEVEL` | `INFO` | Log verbosity. Set to `DEBUG` for detailed timing of fingerprint and match phases. |
 
 Example with Docker Compose:
 
