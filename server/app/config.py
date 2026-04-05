@@ -17,6 +17,7 @@ class FingerprintConfig:
     match_win: int = 2
     min_count: int = 15
     max_query_hashes: int = 0  # 0 = unlimited; positive value caps query hashes for faster matching
+    max_hash_fanout: int = 500  # ignore hashes with more than this many DB entries (0 = no stoplist)
     max_results: int = 5
 
     @property
@@ -28,6 +29,9 @@ def _load_config() -> FingerprintConfig:
     env_val = os.environ.get("WAXID_MAX_QUERY_HASHES")
     if env_val is not None:
         overrides["max_query_hashes"] = int(env_val)
+    env_val = os.environ.get("WAXID_MAX_HASH_FANOUT")
+    if env_val is not None:
+        overrides["max_hash_fanout"] = int(env_val)
     return FingerprintConfig(**overrides)
 
 CONFIG = _load_config()
