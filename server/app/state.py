@@ -17,6 +17,7 @@ class NowPlayingService:
         self._buffer: list[tuple[int, int, int | None, int] | None] = []
         self._pending_candidates: dict[int, MatchCandidate] = {}
         self._current: MatchCandidate | None = None
+        self._last_played: MatchCandidate | None = None  # remember last track for sequential detection
         self._anchor_time: float | None = None
         self._anchor_offset: float | None = None
         self._status: str = "idle"
@@ -50,8 +51,7 @@ class NowPlayingService:
             self._buffer.pop(0)
 
         if (
-            self._current is not None
-            and top is not None
+            top is not None
             and top.score >= MIN_STABLE_SCORE
             and self._is_sequential_track(top)
         ):
@@ -110,13 +110,16 @@ class NowPlayingService:
         return candidates[0] if candidates else None
 
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
-        if self._current is None:
+        """Check if candidate is the next track on the same album.
+        Uses _current if playing, or _last_played if we're in a between-tracks gap."""
+        ref = self._current or self._last_played
+        if ref is None:
             return False
-        if self._current.track_number is None or candidate.track_number is None:
+        if ref.track_number is None or candidate.track_number is None:
             return False
         return (
-            candidate.album_id == self._current.album_id
-            and candidate.track_number == self._current.track_number + 1
+            candidate.album_id == ref.album_id
+            and candidate.track_number == ref.track_number + 1
         )
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
@@ -156,6 +159,7 @@ class NowPlayingService:
         if self._status == "playing":
             self._miss_count += 1
             if self._miss_count >= GRACE_MISSES:
+                self._last_played = self._current
                 self._status = "listening"
                 self._current = None
                 self._anchor_time = None
@@ -174,6 +178,7 @@ class NowPlayingService:
             self._end_track()
 
     def _end_track(self) -> None:
+        self._last_played = self._current
         self._current = None
         self._anchor_time = None
         self._anchor_offset = None
@@ -194,6 +199,7 @@ class NowPlayingService:
             old_status = self._status
             self._status = "idle"
             self._current = None
+            self._last_played = None
             self._anchor_time = None
             self._anchor_offset = None
             self._buffer.clear()
