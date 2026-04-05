@@ -2,6 +2,8 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 
+import numpy as np
+
 
 class Database:
     def __init__(self, db_path: str):
@@ -168,6 +170,26 @@ class Database:
             for row in rows:
                 result[row[0]].append((row[1], row[2]))
         return dict(result)
+
+    def lookup_hashes_flat(self, hash_values: list[int], batch_size: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return DB matches as flat numpy arrays (hashes, track_ids, t_frames)."""
+        if not hash_values:
+            empty = np.empty(0, dtype=np.int64)
+            return empty, empty, empty
+        all_rows = []
+        for i in range(0, len(hash_values), batch_size):
+            batch = hash_values[i:i + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            rows = self.conn.execute(
+                f"SELECT hash, track_id, t_frame FROM hashes WHERE hash IN ({placeholders})",
+                batch,
+            ).fetchall()
+            all_rows.extend(rows)
+        if not all_rows:
+            empty = np.empty(0, dtype=np.int64)
+            return empty, empty, empty
+        arr = np.array(all_rows, dtype=np.int64)
+        return arr[:, 0], arr[:, 1], arr[:, 2]
 
     def get_tracks_for_album(self, album_id: int) -> list[dict]:
         rows = self.conn.execute(
