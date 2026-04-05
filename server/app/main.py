@@ -46,6 +46,7 @@ def _slugify(text: str) -> str:
 
 
 db: Database | None = None
+_stoplist: set[int] = set()
 _settings: Settings | None = None
 _data_dir: Path | None = None
 _roon_notifier: RoonNotifier | None = None
@@ -62,7 +63,7 @@ logging.getLogger("app").setLevel(getattr(logging, log_level, logging.INFO))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, _settings, _data_dir, _roon_notifier
+    global db, _stoplist, _settings, _data_dir, _roon_notifier
     hash_limit = CONFIG.max_query_hashes or "unlimited"
     logger.info("WaxID Server starting (commit: %s, max_query_hashes: %s)", VERSION, hash_limit)
     db_path = _get_db_path()
@@ -73,6 +74,8 @@ async def lifespan(app: FastAPI):
     _settings = load_settings(data_dir)
     _roon_notifier = RoonNotifier(now_playing, _settings)
     db = Database(db_path)
+    if CONFIG.max_hash_fanout > 0:
+        _stoplist = db.build_stoplist(CONFIG.max_hash_fanout)
     yield
     if _roon_notifier:
         await _roon_notifier.shutdown()
@@ -519,7 +522,7 @@ async def match(request: Request):
     start = time.time()
     query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
     logger.debug("Fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
-    results = await asyncio.to_thread(match_hashes, query_hashes, get_db())
+    results = await asyncio.to_thread(match_hashes, query_hashes, get_db(), _stoplist)
     elapsed_ms = (time.time() - start) * 1000
     logger.debug("Match complete in %.1fms (%d results)", elapsed_ms, len(results))
     candidates = [MatchCandidate(**r) for r in results]
@@ -558,7 +561,7 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         start = time.time()
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
         logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
-        results = await asyncio.to_thread(match_hashes, query_hashes, get_db())
+        results = await asyncio.to_thread(match_hashes, query_hashes, get_db(), _stoplist)
         elapsed_ms = (time.time() - start) * 1000
         candidates = [MatchCandidate(**r) for r in results]
         if candidates:

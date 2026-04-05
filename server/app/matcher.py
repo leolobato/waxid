@@ -11,17 +11,24 @@ from .db import Database
 logger = logging.getLogger(__name__)
 
 def match_hashes(
-    query_hashes: list[tuple[int, int]], db: Database
+    query_hashes: list[tuple[int, int]], db: Database,
+    stoplist: set[int] | None = None,
 ) -> list[dict]:
     """Match query hashes against the database using offset voting.
     Args:
         query_hashes: list of (hash_value, query_frame_time)
         db: Database instance
+        stoplist: set of hash values to ignore (too common to be discriminative)
     Returns:
         List of match results sorted by score descending.
     """
     if not query_hashes:
         return []
+
+    if stoplist:
+        query_hashes = [(h, t) for h, t in query_hashes if h not in stoplist]
+        if not query_hashes:
+            return []
 
     if CONFIG.max_query_hashes > 0 and len(query_hashes) > CONFIG.max_query_hashes:
         query_hashes = random.sample(query_hashes, CONFIG.max_query_hashes)

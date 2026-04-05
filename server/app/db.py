@@ -1,8 +1,12 @@
 from __future__ import annotations
+import logging
 import sqlite3
+from array import array
 from collections import defaultdict
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -43,6 +47,9 @@ class Database:
                 source_path  TEXT,
                 created_at   TEXT DEFAULT (datetime('now'))
             );
+        """)
+        self.conn.commit()
+        self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS hashes (
                 hash     INTEGER NOT NULL,
                 track_id INTEGER NOT NULL REFERENCES tracks(track_id) ON DELETE CASCADE,
@@ -150,6 +157,21 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
+    def build_stoplist(self, max_fanout: int) -> set[int]:
+        """Return the set of hashes that appear more than max_fanout times."""
+        cur = self.conn.cursor()
+        cur.row_factory = None
+        try:
+            rows = cur.execute(
+                "SELECT hash FROM hashes GROUP BY hash HAVING COUNT(*) > ?",
+                (max_fanout,),
+            ).fetchall()
+        finally:
+            cur.close()
+        stop = {r[0] for r in rows}
+        logger.info("Stoplist: %d hashes exceed fanout %d", len(stop), max_fanout)
+        return stop
+
     def insert_hashes(self, hashes: list[tuple[int, int, int]]):
         self.conn.executemany(
             "INSERT INTO hashes (hash, track_id, t_frame) VALUES (?, ?, ?)", hashes,
@@ -176,25 +198,25 @@ class Database:
         if not hash_values:
             empty = np.empty(0, dtype=np.int64)
             return empty, empty, empty
-        # Use a dedicated cursor to avoid Row factory overhead
+        # Stream rows into a flat array to avoid Python tuple overhead
         cur = self.conn.cursor()
         cur.row_factory = None
-        all_rows = []
+        flat = array("q")  # unsigned long long, 8 bytes — matches int64
         try:
             for i in range(0, len(hash_values), batch_size):
                 batch = hash_values[i:i + batch_size]
                 placeholders = ",".join("?" for _ in batch)
-                rows = cur.execute(
+                for row in cur.execute(
                     f"SELECT hash, track_id, t_frame FROM hashes WHERE hash IN ({placeholders})",
                     batch,
-                ).fetchall()
-                all_rows.extend(rows)
+                ):
+                    flat.extend(row)
         finally:
             cur.close()
-        if not all_rows:
+        if not flat:
             empty = np.empty(0, dtype=np.int64)
             return empty, empty, empty
-        arr = np.array(all_rows, dtype=np.int64)
+        arr = np.frombuffer(flat, dtype=np.int64).reshape(-1, 3)
         return arr[:, 0], arr[:, 1], arr[:, 2]
 
     def get_tracks_for_album(self, album_id: int) -> list[dict]:
