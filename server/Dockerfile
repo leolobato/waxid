@@ -12,5 +12,6 @@ COPY web/ ./web/
 ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT=${GIT_COMMIT}
 
+
 EXPOSE 8457
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8457"]

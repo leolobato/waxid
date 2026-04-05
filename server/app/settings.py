@@ -15,6 +15,9 @@ class Settings(BaseModel):
     roon_url: str = ""
     roon_zone_name: str = "Record Player"
     server_url: str = "http://localhost:8457"
+    lastfm_session_key: str = ""
+    lastfm_username: str = ""
+    lastfm_enabled: bool = False
 
 
 def load_settings(data_dir: Path) -> Settings:

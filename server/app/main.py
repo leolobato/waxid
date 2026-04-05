@@ -31,6 +31,7 @@ from .state import NowPlayingService
 from .discogs import fetch_discogs_tracklist, lookup_discogs_position
 from .settings import Settings, load_settings, save_settings
 from .roon import RoonNotifier
+from .lastfm import LastfmScrobbler, get_auth_token, complete_auth, build_auth_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,10 @@ _stoplist: set[int] = set()
 _settings: Settings | None = None
 _data_dir: Path | None = None
 _roon_notifier: RoonNotifier | None = None
+_lastfm_api_key: str | None = None
+_lastfm_secret: str | None = None
+_lastfm_scrobbler: LastfmScrobbler | None = None
+_lastfm_pending_token: str | None = None
 
 
 VERSION = os.environ.get("GIT_COMMIT", "dev")
@@ -63,7 +68,7 @@ logging.getLogger("app").setLevel(getattr(logging, log_level, logging.INFO))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, _stoplist, _settings, _data_dir, _roon_notifier
+    global db, _stoplist, _settings, _data_dir, _roon_notifier, _lastfm_api_key, _lastfm_secret, _lastfm_scrobbler
     hash_limit = CONFIG.max_query_hashes or "unlimited"
     logger.info("WaxID Server starting (commit: %s, max_query_hashes: %s)", VERSION, hash_limit)
     db_path = _get_db_path()
@@ -73,10 +78,28 @@ async def lifespan(app: FastAPI):
     _data_dir = data_dir
     _settings = load_settings(data_dir)
     _roon_notifier = RoonNotifier(now_playing, _settings)
+    _lastfm_api_key = os.environ.get("LASTFM_API_KEY")
+    _lastfm_secret = os.environ.get("LASTFM_SECRET")
+    if not _lastfm_api_key or not _lastfm_secret:
+        keys_file = Path(__file__).parent / "lastfm_keys.json"
+        if keys_file.exists():
+            try:
+                keys = json.loads(keys_file.read_text())
+                _lastfm_api_key = _lastfm_api_key or keys.get("api_key")
+                _lastfm_secret = _lastfm_secret or keys.get("secret")
+            except Exception:
+                pass
+    if _lastfm_api_key and _lastfm_secret:
+        _lastfm_scrobbler = LastfmScrobbler(
+            now_playing, _settings,
+            api_key=_lastfm_api_key, secret=_lastfm_secret,
+        )
     db = Database(db_path)
     if CONFIG.max_hash_fanout > 0:
         _stoplist = db.build_stoplist(CONFIG.max_hash_fanout)
     yield
+    if _lastfm_scrobbler:
+        await _lastfm_scrobbler.shutdown()
     if _roon_notifier:
         await _roon_notifier.shutdown()
     now_playing.shutdown()
@@ -640,7 +663,72 @@ async def update_settings(body: Settings):
     _settings = body
     if _roon_notifier:
         await _roon_notifier.reconfigure(body)
+    if _lastfm_scrobbler:
+        await _lastfm_scrobbler.reconfigure(body)
     return body
+
+
+@app.get("/lastfm/status")
+async def lastfm_status():
+    return {
+        "available": _lastfm_api_key is not None and _lastfm_secret is not None,
+        "connected": get_settings().lastfm_enabled and bool(get_settings().lastfm_session_key),
+        "username": get_settings().lastfm_username or None,
+    }
+
+
+@app.get("/lastfm/auth-url")
+async def lastfm_auth_url():
+    global _lastfm_pending_token
+    if not _lastfm_api_key or not _lastfm_secret:
+        raise HTTPException(503, "Last.fm API key not configured")
+    token = await get_auth_token(_lastfm_api_key, _lastfm_secret)
+    _lastfm_pending_token = token
+    url = build_auth_url(_lastfm_api_key, token)
+    return {"url": url}
+
+
+@app.post("/lastfm/callback")
+async def lastfm_callback():
+    global _settings, _lastfm_pending_token
+    if not _lastfm_api_key or not _lastfm_secret:
+        raise HTTPException(503, "Last.fm API key not configured")
+    if not _lastfm_pending_token:
+        raise HTTPException(400, "No pending auth token. Start the flow with GET /lastfm/auth-url first.")
+    token = _lastfm_pending_token
+    _lastfm_pending_token = None
+    try:
+        username, session_key = await complete_auth(token, _lastfm_api_key, _lastfm_secret)
+    except Exception as e:
+        logger.warning("Last.fm auth failed: %s", e)
+        raise HTTPException(400, "Auth failed. Did you approve the request on Last.fm?")
+    assert _data_dir is not None
+    settings = get_settings().model_copy(update={
+        "lastfm_session_key": session_key,
+        "lastfm_username": username,
+        "lastfm_enabled": True,
+    })
+    save_settings(_data_dir, settings)
+    _settings = settings
+    if _lastfm_scrobbler:
+        await _lastfm_scrobbler.reconfigure(settings)
+    return {"username": username}
+
+
+@app.post("/lastfm/disconnect")
+async def lastfm_disconnect():
+    global _settings
+    assert _data_dir is not None
+    settings = get_settings().model_copy(update={
+        "lastfm_session_key": "",
+        "lastfm_username": "",
+        "lastfm_enabled": False,
+    })
+    save_settings(_data_dir, settings)
+    _settings = settings
+    if _lastfm_scrobbler:
+        await _lastfm_scrobbler.reconfigure(settings)
+    return {"disconnected": True}
 
 
 @app.get("/health", response_model=HealthResponse)

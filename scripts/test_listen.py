@@ -9,7 +9,7 @@ import subprocess
 import time
 import urllib.request
 
-CHUNK_SECONDS = 10
+CHUNK_SECONDS = 3
 SAMPLE_RATE = 44100
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # 16-bit

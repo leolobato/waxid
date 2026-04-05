@@ -10,3 +10,4 @@ build/
 xcuserdata/
 .worktrees/
 .superpowers/
+server/app/lastfm_keys.json
