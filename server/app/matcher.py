@@ -2,7 +2,9 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections import defaultdict
+
+import numpy as np
+
 from .config import CONFIG
 from .db import Database
 
@@ -27,42 +29,99 @@ def match_hashes(
     t0 = time.perf_counter()
 
     hash_values = [h for h, _ in query_hashes]
-    query_time_map: dict[int, list[int]] = defaultdict(list)
-    for h, t_q in query_hashes:
-        query_time_map[h].append(t_q)
+    q_arr = np.array(query_hashes, dtype=np.int64)  # columns: hash, t_q
+    q_hashes = q_arr[:, 0]
+    q_times = q_arr[:, 1]
 
-    db_matches = db.lookup_hashes(hash_values)
+    db_hashes, db_track_ids, db_t_frames = db.lookup_hashes_flat(hash_values)
     t_lookup = time.perf_counter()
 
-    # Offset voting: count (track_id, offset) pairs
-    votes: dict[tuple[int, int], int] = defaultdict(int)
-    for h_val, db_entries in db_matches.items():
-        for t_q in query_time_map[h_val]:
-            for track_id, t_db in db_entries:
-                offset = t_db - t_q
-                votes[(track_id, offset)] += 1
-
-    if not votes:
+    if len(db_hashes) == 0:
         logger.debug("match: lookup=%.1fms, 0 votes", (t_lookup - t0) * 1000)
         return []
 
+    # Vectorized cross-join on matching hashes using sorted merge
+    # Sort both sides by hash for searchsorted-based join
+    q_sort = np.argsort(q_hashes)
+    q_hashes_s = q_hashes[q_sort]
+    q_times_s = q_times[q_sort]
+
+    db_sort = np.argsort(db_hashes)
+    db_hashes_s = db_hashes[db_sort]
+    db_track_ids_s = db_track_ids[db_sort]
+    db_t_frames_s = db_t_frames[db_sort]
+
+    # For each unique hash, find ranges in both arrays and cross-join
+    unique_hashes = np.unique(db_hashes_s)
+    q_left = np.searchsorted(q_hashes_s, unique_hashes, side='left')
+    q_right = np.searchsorted(q_hashes_s, unique_hashes, side='right')
+    db_left = np.searchsorted(db_hashes_s, unique_hashes, side='left')
+    db_right = np.searchsorted(db_hashes_s, unique_hashes, side='right')
+
+    # Pre-compute sizes for pre-allocation
+    q_sizes = q_right - q_left
+    db_sizes = db_right - db_left
+    pair_sizes = q_sizes * db_sizes
+    total_pairs = int(pair_sizes.sum())
+
+    if total_pairs == 0:
+        logger.debug("match: lookup=%.1fms, 0 votes", (t_lookup - t0) * 1000)
+        return []
+
+    # Fully vectorized cross-join: compute expanded indices without a Python loop
+    # For each hash group i with nq query entries and nd DB entries,
+    # the cross product has nq*nd pairs. Within position p of group i:
+    #   db_local_idx = p // nq[i],  q_local_idx = p % nq[i]
+    group_starts = np.empty(len(pair_sizes), dtype=np.int64)
+    group_starts[0] = 0
+    np.cumsum(pair_sizes[:-1], out=group_starts[1:])
+    pos_in_group = np.arange(total_pairs, dtype=np.int64) - np.repeat(group_starts, pair_sizes)
+    nq_expanded = np.repeat(q_sizes, pair_sizes)
+
+    q_idx = np.repeat(q_left, pair_sizes) + pos_in_group % nq_expanded
+    db_idx = np.repeat(db_left, pair_sizes) + pos_in_group // nq_expanded
+
+    all_track_ids = db_track_ids_s[db_idx]
+    all_offsets = db_t_frames_s[db_idx] - q_times_s[q_idx]
+
+    # Encode (track_id, offset) as single int64 for fast 1D unique
+    OFFSET_SHIFT = np.int64(1 << 31)
+    keys = (all_track_ids << np.int64(32)) | (all_offsets + OFFSET_SHIFT).astype(np.int64)
+    unique_keys, counts = np.unique(keys, return_counts=True)
+    u_track_ids = (unique_keys >> np.int64(32)).astype(np.int64)
+    u_offsets = (unique_keys & np.int64(0xFFFFFFFF)) - OFFSET_SHIFT
+
     t_voting = time.perf_counter()
 
-    # Group votes by track_id, sum neighborhoods first, then threshold
-    track_offsets: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
-    for (track_id, offset), count in votes.items():
-        track_offsets[track_id][offset] += count
-
+    # Scoring: for each track, windowed sum of vote counts using searchsorted
+    win = CONFIG.match_win
     track_best: dict[int, tuple[int, int]] = {}
-    for track_id, offset_counts in track_offsets.items():
-        for offset, count in offset_counts.items():
-            total = 0
-            for d in range(-CONFIG.match_win, CONFIG.match_win + 1):
-                total += offset_counts.get(offset + d, 0)
-            if total < CONFIG.min_count:
-                continue
-            if track_id not in track_best or total > track_best[track_id][0]:
-                track_best[track_id] = (total, offset)
+
+    # Data is already sorted by (track_id, offset) from np.unique on encoded keys
+    # Find boundaries of each track_id
+    track_boundaries = np.searchsorted(u_track_ids, np.unique(u_track_ids), side='left')
+    track_boundaries = np.append(track_boundaries, len(u_track_ids))
+
+    for i in range(len(track_boundaries) - 1):
+        start, end = track_boundaries[i], track_boundaries[i + 1]
+        s_offsets = u_offsets[start:end]
+        s_counts = counts[start:end]
+
+        left = np.searchsorted(s_offsets, s_offsets - win, side='left')
+        right = np.searchsorted(s_offsets, s_offsets + win, side='right')
+        cumsum = np.empty(len(s_counts) + 1, dtype=np.int64)
+        cumsum[0] = 0
+        np.cumsum(s_counts, out=cumsum[1:])
+        windowed = cumsum[right] - cumsum[left]
+
+        above_mask = windowed >= CONFIG.min_count
+        if not np.any(above_mask):
+            continue
+        # Zero out below-threshold so argmax picks only valid entries
+        windowed_filtered = np.where(above_mask, windowed, np.int64(0))
+        best_idx = np.argmax(windowed_filtered)
+        tid = int(u_track_ids[start])
+        track_best[tid] = (int(windowed[best_idx]), int(s_offsets[best_idx]))
 
     t_scoring = time.perf_counter()
 
