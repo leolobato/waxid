@@ -5,4 +5,6 @@ services:
       - "8457:8457"
     volumes:
       - ./data:/app/data
+    # environment:
+    #   - WAXID_LOG_LEVEL=DEBUG
     restart: unless-stopped

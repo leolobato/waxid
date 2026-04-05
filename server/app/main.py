@@ -54,11 +54,17 @@ _roon_notifier: RoonNotifier | None = None
 VERSION = os.environ.get("GIT_COMMIT", "dev")
 
 
+log_level = os.environ.get("WAXID_LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=logging.WARNING,
+                    format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("app").setLevel(getattr(logging, log_level, logging.INFO))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, _settings, _data_dir, _roon_notifier
     hash_limit = CONFIG.max_query_hashes or "unlimited"
-    print(f"WaxID Server starting (commit: {VERSION}, max_query_hashes: {hash_limit})")
+    logger.info("WaxID Server starting (commit: %s, max_query_hashes: %s)", VERSION, hash_limit)
     db_path = _get_db_path()
     data_dir = Path(db_path).parent
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -79,10 +85,6 @@ app = FastAPI(title="WaxID Server", lifespan=lifespan)
 now_playing = NowPlayingService()
 _pending_audio: bytes | None = None
 _processing = False
-
-
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
 
 
 def get_db() -> Database:
@@ -513,13 +515,13 @@ async def match(request: Request):
     audio_bytes = await request.body()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio body")
-    print(f"Match request received ({len(audio_bytes)} bytes)")
+    logger.debug("Match request received (%d bytes)", len(audio_bytes))
     start = time.time()
     query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
-    print(f"Fingerprinted in {(time.time() - start) * 1000:.1f}ms ({len(query_hashes)} hashes)")
+    logger.debug("Fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
     results = await asyncio.to_thread(match_hashes, query_hashes, get_db())
     elapsed_ms = (time.time() - start) * 1000
-    print(f"Match complete in {elapsed_ms:.1f}ms ({len(results)} results)")
+    logger.debug("Match complete in %.1fms (%d results)", elapsed_ms, len(results))
     candidates = [MatchCandidate(**r) for r in results]
     return MatchResponse(results=candidates, processing_time_ms=round(elapsed_ms, 1))
 
@@ -552,24 +554,23 @@ async def _listen_loop() -> None:
 
 async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -> None:
     try:
-        print(f"[{_ts()}] Listen: processing {len(audio_bytes)} bytes")
+        logger.debug("Listen: processing %d bytes", len(audio_bytes))
         start = time.time()
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
-        print(f"[{_ts()}] Listen: fingerprinted in {(time.time() - start) * 1000:.1f}ms ({len(query_hashes)} hashes)")
+        logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
         results = await asyncio.to_thread(match_hashes, query_hashes, get_db())
         elapsed_ms = (time.time() - start) * 1000
         candidates = [MatchCandidate(**r) for r in results]
         if candidates:
             top = candidates[0]
-            print(f"[{_ts()}] Listen: {top.artist} - {top.track} (score:{top.score}, conf:{top.confidence}, {elapsed_ms:.0f}ms)")
+            logger.info("Listen: %s - %s (score:%s, conf:%s, %.0fms)", top.artist, top.track, top.score, top.confidence, elapsed_ms)
         else:
-            print(f"[{_ts()}] Listen: no match ({elapsed_ms:.0f}ms)")
+            logger.info("Listen: no match (%.0fms)", elapsed_ms)
         await now_playing.feed(candidates, recorded_at=recorded_at)
         state = now_playing.get_state()
-        print(f"[{_ts()}] Listen: status={state.status}" + (f", track_id={state.track_id}" if state.track_id else ""))
+        logger.debug("Listen: status=%s%s", state.status, f", track_id={state.track_id}" if state.track_id else "")
     except Exception:
-        import traceback
-        print(f"[{_ts()}] Listen ERROR: {traceback.format_exc()}")
+        logger.exception("Listen error")
 
 
 @app.get("/tracks", response_model=list[TrackInfo])
