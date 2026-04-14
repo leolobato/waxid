@@ -23,8 +23,18 @@ class NowPlayingService:
         self._status: str = "idle"
         self._idle_task: asyncio.Task | None = None
         self._condition = asyncio.Condition()
+        self._ready_event = asyncio.Event()
         self._last_feed_time: float | None = None
         self._miss_count: int = 0
+
+    async def notify_ready(self) -> None:
+        """Signal that the server is ready, waking any SSE clients waiting for startup."""
+        self._ready_event.set()
+        await self._notify()
+
+    async def wait_ready(self) -> None:
+        """Block until the server is ready."""
+        await self._ready_event.wait()
 
     def shutdown(self):
         if self._idle_task and not self._idle_task.done():

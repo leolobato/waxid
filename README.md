@@ -2,7 +2,7 @@
 
 A local "Shazam" for record collection. Place a tablet next to your turntable and it automatically identifies what's playing, displaying the album art, track name, and metadata on a nice full-screen interface.
 
-WaxID fingerprints your personal vinyl collection and matches live audio from the turntable microphone against it. No cloud services, everything runs locally on your network.
+WaxID fingerprints your personal vinyl collection and matches live audio from the turntable microphone against it. Scrobble to Last.fm, push to a Roon Now Playing display, or integrate with Home Assistant. No cloud services required — everything runs locally on your network.
 
 <p>
   <img src="screenshots/now-playing.png" width="49%" alt="Now Playing">
@@ -46,6 +46,8 @@ Open `http://localhost:8457` to access the web UI. The `data/` directory stores 
 | `WAXID_MAX_QUERY_HASHES` | `0` (unlimited) | Cap the number of query hashes per match. Set to `500` for faster matching on low-power hardware at the cost of some accuracy. `0` uses all hashes. |
 | `WAXID_MAX_HASH_FANOUT` | `500` | Ignore hashes that appear in more than this many DB entries. These are common spectral patterns (like stop words in text search) that slow down lookups without helping identify tracks. `0` disables the stoplist. |
 | `WAXID_LOG_LEVEL` | `INFO` | Log verbosity. Set to `DEBUG` for detailed timing of fingerprint and match phases. |
+| `LASTFM_API_KEY` | — | Last.fm API key for scrobbling. |
+| `LASTFM_SECRET` | — | Last.fm shared secret for scrobbling. |
 
 Example with Docker Compose:
 
@@ -64,6 +66,10 @@ The web UI lets you see what's currently playing in real-time with album art and
 ### Roon Now Playing
 
 For a more configurable now-playing display, the server can push updates to [Roon Now Playing](https://github.com/arthursoares/roon-now-playing), which offers multiple layouts, fonts, backgrounds, and AI-generated track facts. Enable it from the Settings page in the web UI.
+
+### Last.fm Scrobbling
+
+WaxID can automatically scrobble identified tracks to your [Last.fm](https://www.last.fm) profile. Connect your account from the Settings page in the web UI. Requires a Last.fm API key and secret, provided via `LASTFM_API_KEY` and `LASTFM_SECRET` environment variables or a `lastfm_keys.json` file in the server's `app/` directory.
 
 ## Ingestion
 
