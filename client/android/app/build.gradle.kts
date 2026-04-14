@@ -13,8 +13,8 @@ android {
         applicationId = "cc.waxid.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     val releaseStoreFile = System.getenv("RELEASE_STORE_FILE")

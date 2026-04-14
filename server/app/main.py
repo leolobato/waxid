@@ -58,6 +58,7 @@ _lastfm_scrobbler: LastfmScrobbler | None = None
 _lastfm_pending_token: str | None = None
 
 
+APP_VERSION = "1.2.0"
 VERSION = os.environ.get("GIT_COMMIT", "dev")
 
 
@@ -755,7 +756,7 @@ async def lastfm_disconnect():
 @app.get("/health", response_model=HealthResponse)
 async def health():
     data = get_db().get_health()
-    data["version"] = VERSION
+    data["version"] = f"{APP_VERSION} ({VERSION})"
     return data
 
 
