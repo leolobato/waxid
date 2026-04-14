@@ -57,7 +57,7 @@ class MatchCandidate(BaseModel):
 
 
 class NowPlayingResponse(BaseModel):
-    status: Literal["playing", "listening", "idle"]
+    status: Literal["playing", "listening", "idle", "starting"]
     track_id: int | None = None
     artist: str | None = None
     album: str | None = None

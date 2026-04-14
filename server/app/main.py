@@ -48,6 +48,7 @@ def _slugify(text: str) -> str:
 
 db: Database | None = None
 _stoplist: set[int] = set()
+_ready = False
 _settings: Settings | None = None
 _data_dir: Path | None = None
 _roon_notifier: RoonNotifier | None = None
@@ -68,7 +69,7 @@ logging.getLogger("app").setLevel(getattr(logging, log_level, logging.INFO))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, _stoplist, _settings, _data_dir, _roon_notifier, _lastfm_api_key, _lastfm_secret, _lastfm_scrobbler
+    global db, _stoplist, _ready, _settings, _data_dir, _roon_notifier, _lastfm_api_key, _lastfm_secret, _lastfm_scrobbler
     hash_limit = CONFIG.max_query_hashes or "unlimited"
     logger.info("WaxID Server starting (commit: %s, max_query_hashes: %s)", VERSION, hash_limit)
     db_path = _get_db_path()
@@ -96,7 +97,9 @@ async def lifespan(app: FastAPI):
         )
     db = Database(db_path)
     if CONFIG.max_hash_fanout > 0:
-        _stoplist = db.build_stoplist(CONFIG.max_hash_fanout)
+        asyncio.create_task(_build_stoplist_background())
+    else:
+        _ready = True
     yield
     if _lastfm_scrobbler:
         await _lastfm_scrobbler.shutdown()
@@ -104,6 +107,16 @@ async def lifespan(app: FastAPI):
         await _roon_notifier.shutdown()
     now_playing.shutdown()
     db.close()
+
+
+async def _build_stoplist_background() -> None:
+    global _stoplist, _ready
+    try:
+        _stoplist = await asyncio.to_thread(db.build_stoplist, CONFIG.max_hash_fanout)
+    except Exception:
+        logger.exception("Failed to build stoplist")
+    _ready = True
+    await now_playing.notify_ready()
 
 
 app = FastAPI(title="WaxID Server", lifespan=lifespan)
@@ -627,14 +640,22 @@ async def delete_track(track_id: int):
 
 @app.get("/now-playing", response_model=NowPlayingResponse)
 async def get_now_playing():
+    if not _ready:
+        return NowPlayingResponse(status="starting")
     return now_playing.get_state()
 
 
 @app.get("/now-playing/stream")
 async def now_playing_stream(request: Request):
     async def event_generator():
-        current = now_playing.get_state()
-        yield f"data: {current.model_dump_json()}\n\n"
+        if not _ready:
+            starting = NowPlayingResponse(status="starting")
+            yield f"data: {starting.model_dump_json()}\n\n"
+            await now_playing.wait_ready()
+            yield f"data: {now_playing.get_state().model_dump_json()}\n\n"
+        else:
+            current = now_playing.get_state()
+            yield f"data: {current.model_dump_json()}\n\n"
         async for update in now_playing.subscribe(timeout=30.0):
             if await request.is_disconnected():
                 break
