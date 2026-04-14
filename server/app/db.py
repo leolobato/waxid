@@ -224,7 +224,7 @@ class Database:
             "SELECT t.*, COUNT(h.hash) as num_hashes "
             "FROM tracks t LEFT JOIN hashes h ON t.track_id = h.track_id "
             "WHERE t.album_id = ? "
-            "GROUP BY t.track_id ORDER BY t.track_number, t.track_id",
+            "GROUP BY t.track_id ORDER BY t.side, t.position, t.track_id",
             (album_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -233,7 +233,7 @@ class Database:
         rows = self.conn.execute(
             "SELECT t.*, COUNT(h.hash) as num_hashes "
             "FROM tracks t LEFT JOIN hashes h ON t.track_id = h.track_id "
-            "GROUP BY t.track_id ORDER BY t.album_id, t.track_number, t.track_id"
+            "GROUP BY t.track_id ORDER BY t.album_id, t.side, t.position, t.track_id"
         ).fetchall()
         return [dict(r) for r in rows]
 
