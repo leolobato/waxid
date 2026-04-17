@@ -5,7 +5,7 @@ from typing import AsyncGenerator
 from .models import MatchCandidate, NowPlayingResponse
 
 MIN_PROMOTE_SCORE = 10
-MIN_MAINTAIN_SCORE = 6
+MIN_MAINTAIN_SCORE = 4
 BUFFER_SIZE = 3
 REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
@@ -130,6 +130,13 @@ class NowPlayingService:
                 yield self.get_state()
             except asyncio.TimeoutError:
                 yield None
+
+    def current_track_id(self) -> int | None:
+        """Return the currently playing track_id, or None if not playing.
+        Used by the match pipeline to hint the matcher for maintain signals."""
+        if self._status == "playing" and self._current is not None:
+            return self._current.track_id
+        return None
 
     def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
         return candidates[0] if candidates else None
