@@ -13,12 +13,17 @@ logger = logging.getLogger(__name__)
 def match_hashes(
     query_hashes: list[tuple[int, int]], db: Database,
     stoplist: set[int] | None = None,
+    hint_track_id: int | None = None,
 ) -> list[dict]:
     """Match query hashes against the database using offset voting.
     Args:
         query_hashes: list of (hash_value, query_frame_time)
         db: Database instance
         stoplist: set of hash values to ignore (too common to be discriminative)
+        hint_track_id: if set, always include this track's best score in the
+            results (even below min_count). Used by the listen loop to feed
+            the state machine a continuous maintain signal for the currently
+            playing track on weak frames.
     Returns:
         List of match results sorted by score descending.
     """
@@ -113,6 +118,7 @@ def match_hashes(
     win = CONFIG.match_win
     track_best: dict[int, tuple[int, int]] = {}
     near_miss: list[tuple[int, int]] = []  # (track_id, best_windowed_score) for below-threshold
+    hint_entry: tuple[int, int] | None = None  # (score, offset) for hint_track_id
 
     # Data is already sorted by (track_id, offset) from np.unique on encoded keys
     # Find boundaries of each track_id
@@ -132,6 +138,9 @@ def match_hashes(
         windowed = cumsum[right] - cumsum[left]
 
         tid = int(u_track_ids[start])
+        best_idx_unfiltered = int(np.argmax(windowed))
+        if tid == hint_track_id:
+            hint_entry = (int(windowed[best_idx_unfiltered]), int(s_offsets[best_idx_unfiltered]))
         above_mask = windowed >= CONFIG.min_count
         if not np.any(above_mask):
             near_miss.append((tid, int(windowed.max())))
@@ -140,6 +149,10 @@ def match_hashes(
         windowed_filtered = np.where(above_mask, windowed, np.int64(0))
         best_idx = np.argmax(windowed_filtered)
         track_best[tid] = (int(windowed[best_idx]), int(s_offsets[best_idx]))
+
+    # Inject the hinted track if it got votes but didn't clear min_count.
+    if hint_track_id is not None and hint_track_id not in track_best and hint_entry is not None:
+        track_best[hint_track_id] = hint_entry
 
     t_scoring = time.perf_counter()
 
