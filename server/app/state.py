@@ -4,7 +4,8 @@ from typing import AsyncGenerator
 
 from .models import MatchCandidate, NowPlayingResponse
 
-MIN_STABLE_SCORE = 15
+MIN_PROMOTE_SCORE = 10
+MIN_MAINTAIN_SCORE = 6
 BUFFER_SIZE = 3
 REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
@@ -50,9 +51,23 @@ class NowPlayingService:
         if self._status == "idle":
             self._status = "listening"
 
+        # If currently playing, keep the track alive as long as it shows up
+        # anywhere in the candidate list at or above the maintain threshold.
+        # This absorbs weak frames without flapping into "listening".
+        if self._status == "playing" and self._current is not None:
+            current_match = self._find_candidate(candidates, self._current.track_id)
+            if current_match is not None and current_match.score >= MIN_MAINTAIN_SCORE:
+                self._miss_count = 0
+                self._check_track_ended()
+                new_status = self._status
+                new_track_id = self._current.track_id if self._current else None
+                if old_status != new_status or old_track_id != new_track_id:
+                    await self._notify()
+                return
+
         top = self._top_candidate(candidates)
         entry = None
-        if top and top.score >= MIN_STABLE_SCORE:
+        if top and top.score >= MIN_PROMOTE_SCORE:
             entry = (top.track_id, top.album_id, top.track_number, top.score)
             self._pending_candidates[top.track_id] = top
 
@@ -62,7 +77,7 @@ class NowPlayingService:
 
         if (
             top is not None
-            and top.score >= MIN_STABLE_SCORE
+            and top.score >= MIN_PROMOTE_SCORE
             and self._is_sequential_track(top)
         ):
             self._promote(top, recorded_at)
@@ -118,6 +133,12 @@ class NowPlayingService:
 
     def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
         return candidates[0] if candidates else None
+
+    def _find_candidate(self, candidates: list[MatchCandidate], track_id: int) -> MatchCandidate | None:
+        for c in candidates:
+            if c.track_id == track_id:
+                return c
+        return None
 
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
         """Check if candidate is the next track on the same album.

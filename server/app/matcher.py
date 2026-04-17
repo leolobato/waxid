@@ -22,17 +22,20 @@ def match_hashes(
     Returns:
         List of match results sorted by score descending.
     """
+    n_input = len(query_hashes)
     if not query_hashes:
         return []
 
     if stoplist:
         query_hashes = [(h, t) for h, t in query_hashes if h not in stoplist]
         if not query_hashes:
+            logger.debug("match: all %d hashes in stoplist", n_input)
             return []
 
     if CONFIG.max_query_hashes > 0 and len(query_hashes) > CONFIG.max_query_hashes:
         query_hashes = random.sample(query_hashes, CONFIG.max_query_hashes)
 
+    n_after_stoplist = len(query_hashes)
     t0 = time.perf_counter()
 
     q_arr = np.array(query_hashes, dtype=np.int64)  # columns: hash, t_q
@@ -44,7 +47,10 @@ def match_hashes(
     t_lookup = time.perf_counter()
 
     if len(db_hashes) == 0:
-        logger.debug("match: lookup=%.1fms, 0 votes", (t_lookup - t0) * 1000)
+        logger.debug(
+            "match: lookup=%.1fms, 0 votes (input=%d, after_stoplist=%d, db_hits=0)",
+            (t_lookup - t0) * 1000, n_input, n_after_stoplist,
+        )
         return []
 
     # Vectorized cross-join on matching hashes using sorted merge
@@ -72,7 +78,10 @@ def match_hashes(
     total_pairs = int(pair_sizes.sum())
 
     if total_pairs == 0:
-        logger.debug("match: lookup=%.1fms, 0 votes", (t_lookup - t0) * 1000)
+        logger.debug(
+            "match: lookup=%.1fms, 0 votes (input=%d, after_stoplist=%d, db_hits=%d)",
+            (t_lookup - t0) * 1000, n_input, n_after_stoplist, len(db_hashes),
+        )
         return []
 
     # Fully vectorized cross-join: compute expanded indices without a Python loop
@@ -103,6 +112,7 @@ def match_hashes(
     # Scoring: for each track, windowed sum of vote counts using searchsorted
     win = CONFIG.match_win
     track_best: dict[int, tuple[int, int]] = {}
+    near_miss: list[tuple[int, int]] = []  # (track_id, best_windowed_score) for below-threshold
 
     # Data is already sorted by (track_id, offset) from np.unique on encoded keys
     # Find boundaries of each track_id
@@ -121,20 +131,27 @@ def match_hashes(
         np.cumsum(s_counts, out=cumsum[1:])
         windowed = cumsum[right] - cumsum[left]
 
+        tid = int(u_track_ids[start])
         above_mask = windowed >= CONFIG.min_count
         if not np.any(above_mask):
+            near_miss.append((tid, int(windowed.max())))
             continue
         # Zero out below-threshold so argmax picks only valid entries
         windowed_filtered = np.where(above_mask, windowed, np.int64(0))
         best_idx = np.argmax(windowed_filtered)
-        tid = int(u_track_ids[start])
         track_best[tid] = (int(windowed[best_idx]), int(s_offsets[best_idx]))
 
     t_scoring = time.perf_counter()
 
     if not track_best:
-        logger.debug("match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, no results",
-                      (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000, (t_scoring - t_voting) * 1000)
+        near_miss.sort(key=lambda x: x[1], reverse=True)
+        top_str = ", ".join(f"tid={t} best={s}" for t, s in near_miss[:3]) or "none"
+        logger.debug(
+            "match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, no results "
+            "(input=%d, after_stoplist=%d, db_hits=%d, tracks_voted=%d, min_count=%d, top=[%s])",
+            (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000, (t_scoring - t_voting) * 1000,
+            n_input, n_after_stoplist, len(db_hashes), len(near_miss), CONFIG.min_count, top_str,
+        )
         return []
 
     sorted_tracks = sorted(track_best.items(), key=lambda x: x[1][0], reverse=True)
@@ -175,8 +192,12 @@ def match_hashes(
         })
 
     t_end = time.perf_counter()
-    logger.debug("match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, total=%.1fms (%d hashes, %d results)",
-                 (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000,
-                 (t_scoring - t_voting) * 1000, (t_end - t0) * 1000,
-                 len(hash_values), len(results))
+    logger.debug(
+        "match: lookup=%.1fms, voting=%.1fms, scoring=%.1fms, total=%.1fms "
+        "(input=%d, after_stoplist=%d, db_hits=%d, tracks_voted=%d, %d results)",
+        (t_lookup - t0) * 1000, (t_voting - t_lookup) * 1000,
+        (t_scoring - t_voting) * 1000, (t_end - t0) * 1000,
+        n_input, n_after_stoplist, len(db_hashes),
+        len(track_best) + len(near_miss), len(results),
+    )
     return results
