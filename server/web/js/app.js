@@ -36,7 +36,12 @@ function waxidApp() {
 
     // Upload
     uploading: false,
+    uploadPhase: 'uploading',
     uploadProgress: 0,
+    processTotal: 0,
+    processCurrent: 0,
+    processLabel: '',
+    processAlbum: '',
     uploadResult: null,
     dragOver: false,
 
@@ -513,7 +518,12 @@ function waxidApp() {
     async handleFiles(files) {
       if (!files.length) return;
       this.uploading = true;
+      this.uploadPhase = 'uploading';
       this.uploadProgress = 0;
+      this.processTotal = 0;
+      this.processCurrent = 0;
+      this.processLabel = '';
+      this.processAlbum = '';
       this.uploadResult = null;
 
       const form = new FormData();
@@ -522,22 +532,52 @@ function waxidApp() {
       }
 
       const xhr = new XMLHttpRequest();
+      let readOffset = 0;
+      let finalEvent = null;
+      const errors = [];
+
+      const consume = () => {
+        const buf = xhr.responseText;
+        let idx;
+        while ((idx = buf.indexOf('\n', readOffset)) !== -1) {
+          const line = buf.slice(readOffset, idx).trim();
+          readOffset = idx + 1;
+          if (!line) continue;
+          let evt;
+          try { evt = JSON.parse(line); } catch { continue; }
+          if (evt.type === 'plan') {
+            this.uploadPhase = 'processing';
+            this.processTotal = evt.total || 0;
+          } else if (evt.type === 'progress') {
+            this.uploadPhase = 'processing';
+            this.processCurrent = evt.current || 0;
+            this.processLabel = evt.label || '';
+            this.processAlbum = evt.album || '';
+          } else if (evt.type === 'error') {
+            errors.push({ file: evt.file, error: evt.error });
+          } else if (evt.type === 'done') {
+            finalEvent = evt;
+          }
+        }
+      };
+
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           this.uploadProgress = Math.round((e.loaded / e.total) * 100);
         }
       };
+      xhr.upload.onload = () => {
+        this.uploadProgress = 100;
+      };
+      xhr.onprogress = consume;
       xhr.onload = () => {
+        consume();
         this.uploading = false;
-        try {
-          this.uploadResult = JSON.parse(xhr.responseText);
-        } catch (e) {
-          this.uploadResult = {
-            albums_created: 0,
-            tracks_ingested: 0,
-            errors: [{ file: 'upload', error: 'Invalid server response' }],
-          };
-        }
+        this.uploadResult = finalEvent || {
+          albums_created: 0,
+          tracks_ingested: 0,
+          errors: errors.length ? errors : [{ file: 'upload', error: 'Invalid server response' }],
+        };
         this.loadAlbums();
       };
       xhr.onerror = () => {
