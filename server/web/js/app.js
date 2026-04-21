@@ -217,13 +217,11 @@ function waxidApp() {
     },
 
     get filteredAlbums() {
-      const q = this.searchQuery.trim().toLowerCase();
+      const fold = (s) => String(s ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+      const q = fold(this.searchQuery.trim());
       if (!q) return this.albums;
       return this.albums.filter(a => {
-        const artist = (a.artist || '').toLowerCase();
-        const name = (a.name || '').toLowerCase();
-        const year = String(a.year || '');
-        return artist.includes(q) || name.includes(q) || year.includes(q);
+        return fold(a.artist).includes(q) || fold(a.name).includes(q) || fold(a.year).includes(q);
       });
     },
 
