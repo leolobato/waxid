@@ -19,7 +19,15 @@ class Database:
         self.conn.execute("PRAGMA mmap_size=3221225472")
         self.conn.execute("PRAGMA cache_size=-256000")
         self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         self._create_tables()
+        # Migrate an older DB whose auto_vacuum is still NONE/FULL. The pragma
+        # above only takes effect for brand-new DBs; existing files need a
+        # one-time VACUUM to switch modes.
+        mode = self.conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+        if mode != 2:
+            logger.info("Migrating SQLite to auto_vacuum=INCREMENTAL (one-time VACUUM)")
+            self.conn.execute("VACUUM")
 
     def _create_tables(self):
         self.conn.executescript("""
@@ -105,6 +113,13 @@ class Database:
         cur = self.conn.execute("DELETE FROM albums WHERE album_id = ?", (album_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    def incremental_vacuum(self, pages: int | None = None) -> None:
+        if pages is None:
+            self.conn.execute("PRAGMA incremental_vacuum")
+        else:
+            self.conn.execute(f"PRAGMA incremental_vacuum({int(pages)})")
+        self.conn.commit()
 
     def update_album_cover(self, album_id: int, cover_path: str):
         self.conn.execute(

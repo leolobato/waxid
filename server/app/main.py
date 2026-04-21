@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
             api_key=_lastfm_api_key, secret=_lastfm_secret,
         )
     db = Database(db_path)
+    db.incremental_vacuum()
     if CONFIG.max_hash_fanout > 0:
         asyncio.create_task(_build_stoplist_background())
     else:
@@ -324,8 +325,20 @@ async def get_album(album_id: int):
 
 @app.delete("/albums/{album_id}")
 async def delete_album(album_id: int):
-    if not get_db().delete_album(album_id):
+    db = get_db()
+    album = db.get_album(album_id)
+    if not album:
         raise HTTPException(status_code=404, detail="Album not found")
+    cover_path = album.get("cover_path")
+    if not db.delete_album(album_id):
+        raise HTTPException(status_code=404, detail="Album not found")
+    if cover_path:
+        cover_file = Path(_get_db_path()).parent / "covers" / cover_path
+        try:
+            cover_file.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Failed to remove cover %s: %s", cover_file, e)
+    db.incremental_vacuum()
     return {"deleted": True}
 
 
