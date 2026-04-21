@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import io
 import logging
 import os
 import re
@@ -25,7 +26,7 @@ from .models import (
     IngestResponse, MatchResponse, MatchCandidate,
     TrackMetadata, TrackInfo, HealthResponse,
     AlbumCreate, AlbumInfo, AlbumDetail, AlbumUpdate, TrackUpdate,
-    BulkIngestResponse, BulkIngestError, NowPlayingResponse,
+    NowPlayingResponse,
 )
 from .state import NowPlayingService
 from .discogs import fetch_discogs_tracklist, lookup_discogs_position
@@ -446,108 +447,153 @@ async def ingest(file: UploadFile = File(...), metadata: str = Form(...)):
     return IngestResponse(track_id=track_id, num_hashes=len(hashes), duration_s=meta.duration_s)
 
 
-@app.post("/ingest/bulk", response_model=BulkIngestResponse)
+@app.post("/ingest/bulk")
 async def ingest_bulk(files: list[UploadFile] = File(...)):
     db = get_db()
-    albums_created = 0
-    tracks_ingested = 0
-    errors = []
 
+    bundles: list[tuple[str, str, bytes | str, int]] = []
+    total = 0
     for upload in files:
-        try:
-            content = await upload.read()
-            filename = upload.filename or "unknown"
-            ext = os.path.splitext(filename)[1].lower()
+        content = await upload.read()
+        filename = upload.filename or "unknown"
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".zip":
+            try:
+                with zipfile_mod.ZipFile(io.BytesIO(content)) as zf:
+                    count = sum(
+                        1 for n in zf.namelist()
+                        if os.path.splitext(n)[1].lower() in AUDIO_EXTENSIONS
+                    )
+                total += count
+                bundles.append(("zip", filename, content, count))
+            except Exception as e:
+                bundles.append(("error", filename, str(e), 0))
+        elif ext in AUDIO_EXTENSIONS:
+            total += 1
+            bundles.append(("audio", filename, content, 1))
+        else:
+            bundles.append(("error", filename, f"Unsupported format: {ext}", 0))
 
-            if ext == ".zip":
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    zpath = os.path.join(tmpdir, "upload.zip")
-                    with open(zpath, "wb") as f:
-                        f.write(content)
-                    with zipfile_mod.ZipFile(zpath) as zf:
-                        zf.extractall(tmpdir)
+    async def stream():
+        albums_created = 0
+        tracks_ingested = 0
+        errors: list[dict] = []
+        current = 0
 
-                    audio_files = []
-                    discogs_url = None
-                    for root, dirs, fnames in os.walk(tmpdir):
-                        for fn in fnames:
-                            fpath = os.path.join(root, fn)
-                            fext = os.path.splitext(fn)[1].lower()
-                            if fext in AUDIO_EXTENSIONS:
-                                audio_files.append(fpath)
-                            elif fext in (".md", ".txt"):
-                                try:
-                                    with open(fpath, "r", errors="ignore") as tf:
-                                        url = _find_discogs_url(tf.read())
-                                        if url:
-                                            discogs_url = url
-                                except Exception:
-                                    pass
+        def event(obj: dict) -> str:
+            return json.dumps(obj) + "\n"
 
-                    # Check for cover image in the zip
-                    cover_image_path = _find_cover_image(tmpdir)
+        yield event({"type": "plan", "total": total})
 
-                    # Fetch Discogs side/position mapping if URL found
-                    discogs_mapping = {}
-                    discogs_tracks = []
-                    if discogs_url:
-                        try:
-                            discogs_mapping, discogs_tracks = await asyncio.to_thread(
-                                fetch_discogs_tracklist, discogs_url
-                            )
-                        except Exception as e:
-                            logger.warning("Discogs fetch failed, proceeding without side/position: %s", e)
+        for kind, filename, payload, _count in bundles:
+            if kind == "error":
+                errors.append({"file": filename, "error": payload})
+                yield event({"type": "error", "file": filename, "error": payload})
+                continue
 
-                    first_file = True
-                    for track_idx, fpath in enumerate(sorted(audio_files), 1):
-                        try:
-                            tags = _extract_tags(fpath)
-                            side, position = lookup_discogs_position(
-                                {"track": tags.get("track")},
-                                track_idx, discogs_mapping, discogs_tracks,
-                            )
-                            result = await _ingest_single_file(
-                                db, fpath, os.path.basename(fpath),
-                                discogs_url=discogs_url,
-                                extract_cover=first_file and cover_image_path is None,
-                                side=side, position=position,
-                            )
-                            # Upload folder cover image on first track (once we have album_id)
-                            if first_file and cover_image_path:
-                                img_ext = os.path.splitext(cover_image_path)[1].lower()
-                                with open(cover_image_path, "rb") as img_f:
-                                    _save_cover_for_album(db, result["album_id"], img_f.read(), img_ext)
-                            first_file = False
-                            if result.get("album_created"):
-                                albums_created += 1
-                            tracks_ingested += 1
-                        except Exception as e:
-                            errors.append({"file": os.path.basename(fpath), "error": str(e)})
+            if kind == "zip":
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        zpath = os.path.join(tmpdir, "upload.zip")
+                        with open(zpath, "wb") as f:
+                            f.write(payload)
+                        with zipfile_mod.ZipFile(zpath) as zf:
+                            zf.extractall(tmpdir)
 
-            elif ext in AUDIO_EXTENSIONS:
+                        audio_files = []
+                        discogs_url = None
+                        for root, _dirs, fnames in os.walk(tmpdir):
+                            for fn in fnames:
+                                fpath = os.path.join(root, fn)
+                                fext = os.path.splitext(fn)[1].lower()
+                                if fext in AUDIO_EXTENSIONS:
+                                    audio_files.append(fpath)
+                                elif fext in (".md", ".txt"):
+                                    try:
+                                        with open(fpath, "r", errors="ignore") as tf:
+                                            url = _find_discogs_url(tf.read())
+                                            if url:
+                                                discogs_url = url
+                                    except Exception:
+                                        pass
+
+                        cover_image_path = _find_cover_image(tmpdir)
+
+                        discogs_mapping = {}
+                        discogs_tracks = []
+                        if discogs_url:
+                            try:
+                                discogs_mapping, discogs_tracks = await asyncio.to_thread(
+                                    fetch_discogs_tracklist, discogs_url
+                                )
+                            except Exception as e:
+                                logger.warning("Discogs fetch failed, proceeding without side/position: %s", e)
+
+                        first_file = True
+                        for track_idx, fpath in enumerate(sorted(audio_files), 1):
+                            try:
+                                tags = _extract_tags(fpath)
+                                side, position = lookup_discogs_position(
+                                    {"track": tags.get("track")},
+                                    track_idx, discogs_mapping, discogs_tracks,
+                                )
+                                current += 1
+                                label = tags.get("track") or os.path.splitext(os.path.basename(fpath))[0]
+                                album_label = tags.get("album") or "Unknown Album"
+                                yield event({
+                                    "type": "progress", "current": current,
+                                    "label": label, "album": album_label,
+                                })
+                                result = await _ingest_single_file(
+                                    db, fpath, os.path.basename(fpath),
+                                    discogs_url=discogs_url,
+                                    extract_cover=first_file and cover_image_path is None,
+                                    side=side, position=position,
+                                )
+                                if first_file and cover_image_path:
+                                    img_ext = os.path.splitext(cover_image_path)[1].lower()
+                                    with open(cover_image_path, "rb") as img_f:
+                                        _save_cover_for_album(db, result["album_id"], img_f.read(), img_ext)
+                                first_file = False
+                                if result.get("album_created"):
+                                    albums_created += 1
+                                tracks_ingested += 1
+                            except Exception as e:
+                                errors.append({"file": os.path.basename(fpath), "error": str(e)})
+                                yield event({"type": "error", "file": os.path.basename(fpath), "error": str(e)})
+                except Exception as e:
+                    errors.append({"file": filename, "error": str(e)})
+                    yield event({"type": "error", "file": filename, "error": str(e)})
+
+            elif kind == "audio":
+                ext = os.path.splitext(filename)[1].lower()
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    tmp.write(content)
+                    tmp.write(payload)
                     tmp_path = tmp.name
                 try:
+                    current += 1
+                    yield event({
+                        "type": "progress", "current": current,
+                        "label": os.path.splitext(filename)[0], "album": "",
+                    })
                     result = await _ingest_single_file(db, tmp_path, filename)
                     if result.get("album_created"):
                         albums_created += 1
                     tracks_ingested += 1
                 except Exception as e:
                     errors.append({"file": filename, "error": str(e)})
+                    yield event({"type": "error", "file": filename, "error": str(e)})
                 finally:
                     os.unlink(tmp_path)
-            else:
-                errors.append({"file": filename, "error": f"Unsupported format: {ext}"})
 
-        except Exception as e:
-            errors.append({"file": upload.filename or "unknown", "error": str(e)})
+        yield event({
+            "type": "done",
+            "albums_created": albums_created,
+            "tracks_ingested": tracks_ingested,
+            "errors": errors,
+        })
 
-    return BulkIngestResponse(
-        albums_created=albums_created,
-        tracks_ingested=tracks_ingested,
-        errors=[BulkIngestError(**e) for e in errors],
-    )
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
 @app.post("/match", response_model=MatchResponse)

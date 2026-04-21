@@ -125,14 +125,3 @@ class TrackUpdate(BaseModel):
     track_number: int | None = None
     side: str | None = None
     position: str | None = None
-
-
-class BulkIngestError(BaseModel):
-    file: str
-    error: str
-
-
-class BulkIngestResponse(BaseModel):
-    albums_created: int
-    tracks_ingested: int
-    errors: list[BulkIngestError]

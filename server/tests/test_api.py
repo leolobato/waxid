@@ -29,6 +29,17 @@ def _make_wav(duration=5.0, sr=44100, freq=440.0) -> bytes:
     return buf.getvalue()
 
 
+def _bulk_ingest_done(response) -> dict:
+    """Parse NDJSON streamed from /ingest/bulk and return the final 'done' event."""
+    for line in response.text.splitlines():
+        if not line.strip():
+            continue
+        evt = json.loads(line)
+        if evt.get("type") == "done":
+            return evt
+    raise AssertionError("No 'done' event in /ingest/bulk response")
+
+
 def _make_png():
     sig = b'\x89PNG\r\n\x1a\n'
     ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
@@ -298,7 +309,7 @@ def test_bulk_ingest_single_file(client):
         files=[("files", ("track1.wav", wav, "audio/wav"))],
     )
     assert r.status_code == 200
-    data = r.json()
+    data = _bulk_ingest_done(r)
     assert data["tracks_ingested"] == 1
     assert data["albums_created"] == 1
     assert data["errors"] == []
@@ -329,7 +340,7 @@ def test_bulk_ingest_zip_with_discogs_txt(client):
         files=[("files", ("album.zip", buf.read(), "application/zip"))],
     )
     assert r.status_code == 200
-    data = r.json()
+    data = _bulk_ingest_done(r)
     assert isinstance(data["albums_created"], int)
     assert isinstance(data["tracks_ingested"], int)
 
@@ -358,7 +369,7 @@ def test_bulk_ingest_zip_populates_side_position(client, monkeypatch):
         files=[("files", ("album.zip", buf.read(), "application/zip"))],
     )
     assert r.status_code == 200
-    assert r.json()["tracks_ingested"] == 2
+    assert _bulk_ingest_done(r)["tracks_ingested"] == 2
 
     tracks = client.get("/tracks").json()
     tracks_sorted = sorted(tracks, key=lambda t: t["track_id"])

@@ -480,12 +480,32 @@
     </div>
 
     <!-- Progress -->
-    <div class="upload-progress" x-show="uploading">
-      <div class="progress-label">Uploading and processing...</div>
+    <div class="upload-progress" x-show="uploading && uploadPhase === 'uploading'">
+      <div class="progress-label">Uploading...</div>
       <div class="progress-bar-outer">
         <div class="progress-bar-inner" :style="`width: ${uploadProgress}%`"></div>
       </div>
       <div class="progress-percent" x-text="uploadProgress + '%'"></div>
+    </div>
+    <div class="upload-progress" x-show="uploading && uploadPhase === 'processing'">
+      <div class="progress-label">
+        <template x-if="processTotal > 0">
+          <span x-text="`Processing ${processCurrent} of ${processTotal}`"></span>
+        </template>
+        <template x-if="processTotal === 0">
+          <span>Processing...</span>
+        </template>
+      </div>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner"
+             :style="`width: ${processTotal > 0 ? Math.round((processCurrent / processTotal) * 100) : 0}%`"></div>
+      </div>
+      <div class="progress-percent">
+        <span x-text="processLabel"></span>
+        <template x-if="processAlbum">
+          <span> &middot; <span x-text="processAlbum"></span></span>
+        </template>
+      </div>
     </div>
 
     <!-- Results -->
