@@ -28,6 +28,7 @@ function waxidApp() {
     deletingTracks: new Set(),
     editingTrack: null,
     trackEditForm: {},
+    coverVersions: {},
 
     // Add tracks to album
     addingTracks: false,
@@ -324,15 +325,23 @@ function waxidApp() {
       const form = new FormData();
       form.append('file', file);
       try {
-        await fetch(`/albums/${this.albumDetail.album_id}/cover`, {
+        const albumId = this.albumDetail.album_id;
+        await fetch(`/albums/${albumId}/cover`, {
           method: 'POST',
           body: form,
         });
-        await this.openAlbum(this.albumDetail.album_id);
+        this.coverVersions = { ...this.coverVersions, [albumId]: Date.now() };
+        await this.openAlbum(albumId);
         await this.loadAlbums();
       } catch (e) {
         console.error('Failed to upload cover:', e);
       }
+    },
+
+    coverSrc(album) {
+      if (!album?.cover_path) return '';
+      const v = this.coverVersions[album.album_id];
+      return v ? `/albums/${album.album_id}/cover?v=${v}` : `/albums/${album.album_id}/cover`;
     },
 
     async deleteAlbum() {

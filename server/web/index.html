@@ -232,7 +232,7 @@
       <template x-for="album in sortedAlbums" :key="album.album_id">
         <div class="album-card" @click="openAlbum(album.album_id)">
           <div class="album-card-cover">
-            <img :src="album.cover_path ? `/albums/${album.album_id}/cover` : ''"
+            <img :src="coverSrc(album)"
                  :alt="album.name"
                  x-show="album.cover_path">
             <div class="album-card-cover-placeholder" x-show="!album.cover_path">
@@ -275,7 +275,7 @@
           <template x-for="album in sortedAlbums" :key="album.album_id">
             <tr @click="openAlbum(album.album_id)" class="clickable-row">
               <td class="cover-cell">
-                <img :src="album.cover_path ? `/albums/${album.album_id}/cover` : ''"
+                <img :src="coverSrc(album)"
                      x-show="album.cover_path"
                      class="cover-thumb">
                 <div class="cover-thumb-placeholder" x-show="!album.cover_path">
@@ -321,7 +321,7 @@
     <div class="album-detail-top" x-show="albumDetail">
       <!-- Cover Art -->
       <div class="album-detail-cover">
-        <img :src="albumDetail?.cover_path ? `/albums/${albumDetail.album_id}/cover` : ''"
+        <img :src="coverSrc(albumDetail)"
              :alt="albumDetail?.name"
              x-show="albumDetail?.cover_path"
              class="album-detail-cover-img">
