@@ -79,7 +79,44 @@ function waxidApp() {
           this.loadSettings();
           this.loadLastfmStatus();
         }
+        this.syncHash();
       });
+      window.addEventListener('popstate', () => this.restoreFromHash());
+      this.restoreFromHash();
+    },
+
+    syncHash() {
+      let hash = '';
+      if (this.view === 'album-detail' && this.albumDetail) {
+        hash = `#album/${this.albumDetail.album_id}`;
+      } else if (this.view === 'library') {
+        hash = '#library';
+      } else if (this.view === 'uploading') {
+        hash = '#upload';
+      } else if (this.view === 'settings') {
+        hash = '#settings';
+      }
+      const target = hash || window.location.pathname + window.location.search;
+      if ((hash || '') !== (window.location.hash || '')) {
+        history.pushState(null, '', target);
+      }
+    },
+
+    restoreFromHash() {
+      const h = window.location.hash;
+      const albumMatch = h.match(/^#album\/(\d+)$/);
+      if (albumMatch) {
+        this.openAlbum(parseInt(albumMatch[1], 10));
+      } else if (h === '#library') {
+        this.view = 'library';
+        this.loadAlbums();
+      } else if (h === '#upload') {
+        this.view = 'uploading';
+      } else if (h === '#settings') {
+        this.view = 'settings';
+      } else {
+        this.view = 'nowplaying';
+      }
     },
 
     toggleListening() {
