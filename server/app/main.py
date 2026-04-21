@@ -59,7 +59,7 @@ _lastfm_scrobbler: LastfmScrobbler | None = None
 _lastfm_pending_token: str | None = None
 
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 VERSION = os.environ.get("GIT_COMMIT", "dev")
 
 
