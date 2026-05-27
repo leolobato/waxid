@@ -68,6 +68,7 @@ class NowPlayingService:
         self._last_feed_time: float | None = None
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
+        self._silence_streak: int = 0
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -178,6 +179,16 @@ class NowPlayingService:
         if self._status == "playing" and self._current is not None:
             return self._current.track_id
         return None
+
+    def note_silence(self) -> None:
+        """Called by the listen handler when a chunk was deemed silent
+        (RMS gate or hash-density gate). feed() stays silence-agnostic."""
+        self._silence_streak += 1
+
+    def note_signal(self) -> None:
+        """Called by the listen handler when a chunk passed both silence gates,
+        regardless of whether the matcher returned candidates."""
+        self._silence_streak = 0
 
     def _album_layout(self, album_id: int) -> AlbumLayout:
         cached = self._album_layout_cache.get(album_id)
