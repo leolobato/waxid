@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 from .models import MatchCandidate, NowPlayingResponse
 
@@ -14,7 +14,11 @@ IDLE_TIMEOUT_PLAYING_S = 120.0
 
 
 class NowPlayingService:
-    def __init__(self):
+    def __init__(
+        self,
+        get_tracks_for_album: Callable[[int], list[dict]] | None = None,
+    ):
+        self._get_tracks_for_album = get_tracks_for_album or (lambda _album_id: [])
         self._buffer: list[tuple[int, int, int | None, int] | None] = []
         self._pending_candidates: dict[int, MatchCandidate] = {}
         self._current: MatchCandidate | None = None
