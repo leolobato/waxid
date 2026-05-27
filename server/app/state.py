@@ -1,4 +1,5 @@
 import asyncio
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -13,6 +14,10 @@ REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
 IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
+BOOST_ON_ALBUM = 1.5
+BOOST_EXPECTED_NEXT = 2.5
+SILENCE_FRAMES_FOR_FLIP = 4
+SILENCE_FRAMES_FOR_RELEASE = 20
 
 
 @dataclass
@@ -29,6 +34,12 @@ class AlbumTrackEntry:
 class AlbumLayout:
     by_track_id: dict[int, AlbumTrackEntry]
     sides: dict[str | None, list[AlbumTrackEntry]]
+
+
+@dataclass
+class BoostInfo:
+    raw_score: int
+    boost: float
 
 
 _POSITION_NUMBER_RE = re.compile(r"(\d+)\s*$")
@@ -256,6 +267,71 @@ class NowPlayingService:
         if ref_entry is None or cand_entry is None:
             return False
         return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
+
+    def _is_expected_next(self, candidate: MatchCandidate) -> bool:
+        """True if `candidate` is the expected next track on the locked album.
+        Sequential case only — side-flip case lands in Task C4."""
+        if self._locked_album_id is None:
+            return False
+        if candidate.album_id != self._locked_album_id:
+            return False
+        ref = self._current or self._last_played
+        if ref is None or ref.album_id != self._locked_album_id:
+            return False
+        layout = self._album_layout(self._locked_album_id)
+        ref_entry = layout.by_track_id.get(ref.track_id)
+        cand_entry = layout.by_track_id.get(candidate.track_id)
+        if ref_entry is None or cand_entry is None:
+            return False
+        return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
+
+    def expected_next_track_ids(self) -> set[int]:
+        """Track IDs the matcher should hint for the expected-next case.
+        Sequential case only — side-flip case lands in Task C4."""
+        if self._locked_album_id is None:
+            return set()
+        ref = self._current or self._last_played
+        if ref is None or ref.album_id != self._locked_album_id:
+            return set()
+        layout = self._album_layout(self._locked_album_id)
+        ref_entry = layout.by_track_id.get(ref.track_id)
+        if ref_entry is None:
+            return set()
+        target = ref_entry.effective_track_number + 1
+        return {
+            entry.track_id
+            for entry in layout.by_track_id.values()
+            if entry.effective_track_number == target
+        }
+
+    def apply_boosts(
+        self, candidates: list[MatchCandidate]
+    ) -> tuple[list[MatchCandidate], list[BoostInfo]]:
+        """Re-rank candidates by lock-aware boosts.
+
+        Returns (boosted_candidates, boost_infos) sorted by boosted score desc.
+        boost_infos is index-aligned with boosted_candidates and carries the
+        raw score plus the boost factor for logging.
+        """
+        annotated: list[tuple[MatchCandidate, int, float]] = []
+        for c in candidates:
+            if self._locked_album_id is None:
+                boost = 1.0
+            elif self._is_expected_next(c):
+                boost = BOOST_EXPECTED_NEXT
+            elif c.album_id == self._locked_album_id:
+                boost = BOOST_ON_ALBUM
+            else:
+                boost = 1.0
+            new_score = math.ceil(c.score * boost)
+            boosted_c = c.model_copy(update={"score": new_score})
+            annotated.append((boosted_c, c.score, boost))
+
+        annotated.sort(key=lambda t: t[0].score, reverse=True)
+
+        boosted = [t[0] for t in annotated]
+        infos = [BoostInfo(raw_score=t[1], boost=t[2]) for t in annotated]
+        return boosted, infos
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
         if candidate.album_id != self._locked_album_id:
