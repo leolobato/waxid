@@ -69,6 +69,8 @@ class NowPlayingService:
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
         self._silence_streak: int = 0
+        self._locked_album_id: int | None = None
+        self._session_played: set[int] = set()
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -256,6 +258,11 @@ class NowPlayingService:
         return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
+        if candidate.album_id != self._locked_album_id:
+            self._locked_album_id = candidate.album_id
+            self._session_played = {candidate.track_id}
+        else:
+            self._session_played.add(candidate.track_id)
         self._current = candidate
         self._anchor_time = time.time()
         offset = candidate.offset_s or 0.0

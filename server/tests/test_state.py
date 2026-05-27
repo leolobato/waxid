@@ -396,3 +396,48 @@ class TestSilenceStreak:
         service.note_silence()
         await service.feed([])
         assert service._silence_streak == 2
+
+
+class TestAlbumLock:
+    @pytest.mark.asyncio
+    async def test_lock_set_on_first_promote(self, service):
+        cand = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([cand])
+        await service.feed([cand])
+        assert service._locked_album_id == 10
+        assert service._session_played == {1}
+
+    @pytest.mark.asyncio
+    async def test_lock_change_resets_session_played(self, service):
+        cand1 = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([cand1])
+        await service.feed([cand1])
+        assert service._session_played == {1}
+        # Force a promotion from a different album by clearing the current
+        # state and feeding a strong cross-album candidate.
+        service._current = None
+        service._last_played = None
+        service._buffer.clear()
+        service._pending_candidates.clear()
+        cand99 = make_candidate(track_id=99, album_id=20, score=20)
+        await service.feed([cand99])
+        await service.feed([cand99])
+        assert service._locked_album_id == 20
+        assert service._session_played == {99}
+
+    @pytest.mark.asyncio
+    async def test_same_album_promote_adds_to_session_played(self, service):
+        cand1 = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([cand1])
+        await service.feed([cand1])
+        assert service._session_played == {1}
+        # Promote a different track from the same album via a fresh stability run.
+        service._current = None
+        service._last_played = None
+        service._buffer.clear()
+        service._pending_candidates.clear()
+        cand2 = make_candidate(track_id=2, album_id=10, score=20)
+        await service.feed([cand2])
+        await service.feed([cand2])
+        assert service._locked_album_id == 10
+        assert service._session_played == {1, 2}
