@@ -657,8 +657,13 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         start = time.time()
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
         logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
-        hint_track_id = now_playing.current_track_id()
-        results = await asyncio.to_thread(match_hashes, query_hashes, get_db(), _stoplist, hint_track_id)
+        hint_track_ids: set[int] = set()
+        cur = now_playing.current_track_id()
+        if cur is not None:
+            hint_track_ids.add(cur)
+        # expected_next_track_ids() arrives in Task C3; until then the only
+        # hint is the currently-playing track, identical to today's behaviour.
+        results = await asyncio.to_thread(match_hashes, query_hashes, get_db(), _stoplist, hint_track_ids)
         elapsed_ms = (time.time() - start) * 1000
         candidates = [MatchCandidate(**r) for r in results]
         if candidates:
