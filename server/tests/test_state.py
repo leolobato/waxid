@@ -7,11 +7,12 @@ from app.models import MatchCandidate, NowPlayingResponse
 
 
 def make_candidate(track_id=1, album_id=1, track_number=1, score=20,
-                   offset_s=30.0, duration_s=180.0, confidence=2.0):
+                   offset_s=30.0, duration_s=180.0, confidence=2.0,
+                   side="A", position="A1"):
     return MatchCandidate(
         track_id=track_id, artist="Artist", album="Album",
         album_id=album_id, track=f"Track {track_id}",
-        track_number=track_number, year=2020, side="A", position="A1",
+        track_number=track_number, year=2020, side=side, position=position,
         score=score, confidence=confidence, offset_s=offset_s,
         duration_s=duration_s, discogs_url=None, cover_url="/albums/1/cover",
     )
@@ -443,111 +444,79 @@ class TestAlbumLock:
         assert service._session_played == {1, 2}
 
 
-class TestApplyBoosts:
-    def _layout_svc(self, tracks):
+class TestSideFlipExpectedNext:
+    def _two_side_svc(self):
+        tracks = [
+            {"track_id": 10, "album_id": 50, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 11, "album_id": 50, "side": "A", "position": "A2", "track_number": 2},
+            {"track_id": 20, "album_id": 50, "side": "B", "position": "B1", "track_number": 3},
+            {"track_id": 21, "album_id": 50, "side": "B", "position": "B2", "track_number": 4},
+            {"track_id": 30, "album_id": 50, "side": None, "position": None, "track_number": 5},
+        ]
         return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
 
-    def test_unlocked_returns_scores_unchanged(self):
-        svc = self._layout_svc([])
+    def test_side_flip_boosts_other_side_after_silence(self):
+        svc = self._two_side_svc()
         try:
-            c = make_candidate(track_id=1, album_id=10, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            assert boosted[0].score == 7
-            assert infos[0].raw_score == 7
-            assert infos[0].boost == 1.0
+            svc._locked_album_id = 50
+            svc._session_played = {20, 21}  # finished side B
+            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
+                                              position="B2", track_number=4)
+            svc._silence_streak = 5  # >= SILENCE_FRAMES_FOR_FLIP (4)
+            # Candidate from side A
+            cand_a = make_candidate(track_id=10, album_id=50, side="A",
+                                    position="A1", track_number=1, score=5)
+            assert svc._is_expected_next(cand_a) is True
+            assert svc.expected_next_track_ids() == {10, 11}
         finally:
             svc.shutdown()
 
-    def test_on_album_candidate_gets_1_5(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
+    def test_side_flip_requires_silence(self):
+        svc = self._two_side_svc()
         try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=1, album_id=10, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            import math
-            assert boosted[0].score == math.ceil(7 * 1.5)
-            assert infos[0].raw_score == 7
-            assert infos[0].boost == 1.5
-        finally:
-            svc.shutdown()
-
-    def test_off_album_when_locked_unchanged(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=99, album_id=20, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            assert boosted[0].score == 7
-            assert infos[0].boost == 1.0
-        finally:
-            svc.shutdown()
-
-    def test_expected_next_sequential_gets_2_5(self):
-        tracks = [
-            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
-        ]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
-            c = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
-            boosted, infos = svc.apply_boosts([c])
-            import math
-            assert boosted[0].score == math.ceil(5 * 2.5)
-            assert infos[0].boost == 2.5
-        finally:
-            svc.shutdown()
-
-    def test_boosted_score_is_int(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=1, album_id=10, score=3)
-            boosted, _ = svc.apply_boosts([c])
-            # ceil(3 * 1.5) = 5, must be int (not 4.5 or 4)
-            assert boosted[0].score == 5
-            assert isinstance(boosted[0].score, int)
-        finally:
-            svc.shutdown()
-
-    def test_apply_boosts_resorts_by_boosted_score(self):
-        tracks = [
-            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
-        ]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
-            off = make_candidate(track_id=99, album_id=20, score=8)
-            nxt = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
-            boosted, _ = svc.apply_boosts([off, nxt])
-            # expected-next: 5 * 2.5 = 13 beats off-album 8
-            assert boosted[0].track_id == 2
-            assert boosted[1].track_id == 99
-        finally:
-            svc.shutdown()
-
-    def test_expected_next_track_ids_default(self):
-        tracks = [
-            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
-        ]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
-            assert svc.expected_next_track_ids() == {2}
-        finally:
-            svc.shutdown()
-
-    def test_expected_next_track_ids_empty_when_unlocked(self):
-        svc = self._layout_svc([])
-        try:
+            svc._locked_album_id = 50
+            svc._session_played = {20, 21}
+            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
+                                              position="B2", track_number=4)
+            svc._silence_streak = 2  # below SILENCE_FRAMES_FOR_FLIP
+            cand_a = make_candidate(track_id=10, album_id=50, side="A",
+                                    position="A1", track_number=1, score=5)
+            # Not the sequential next (there's no track #5 on side B),
+            # and silence hasn't elapsed -> expected-next must be False.
+            assert svc._is_expected_next(cand_a) is False
             assert svc.expected_next_track_ids() == set()
+        finally:
+            svc.shutdown()
+
+    def test_side_flip_excludes_already_played(self):
+        svc = self._two_side_svc()
+        try:
+            svc._locked_album_id = 50
+            svc._session_played = {20, 21, 10}  # 10 already played
+            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
+                                              position="B2", track_number=4)
+            svc._silence_streak = 5
+            cand_played = make_candidate(track_id=10, album_id=50, side="A",
+                                         position="A1", track_number=1, score=5)
+            cand_unplayed = make_candidate(track_id=11, album_id=50, side="A",
+                                           position="A2", track_number=2, score=5)
+            assert svc._is_expected_next(cand_played) is False
+            assert svc._is_expected_next(cand_unplayed) is True
+            assert svc.expected_next_track_ids() == {11}
+        finally:
+            svc.shutdown()
+
+    def test_side_flip_excludes_no_side_tracks(self):
+        svc = self._two_side_svc()
+        try:
+            svc._locked_album_id = 50
+            svc._session_played = {20, 21}
+            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
+                                              position="B2", track_number=4)
+            svc._silence_streak = 5
+            cand_no_side = make_candidate(track_id=30, album_id=50, side=None,
+                                          position=None, track_number=5, score=5)
+            assert svc._is_expected_next(cand_no_side) is False
+            assert 30 not in svc.expected_next_track_ids()
         finally:
             svc.shutdown()

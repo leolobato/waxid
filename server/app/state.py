@@ -268,9 +268,35 @@ class NowPlayingService:
             return False
         return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
 
+    def _is_last_track_of_side(self, layout: AlbumLayout, entry: AlbumTrackEntry) -> bool:
+        if entry.side is None:
+            return False
+        side_tracks = layout.sides.get(entry.side, [])
+        if not side_tracks:
+            return False
+        max_etn = max(t.effective_track_number for t in side_tracks)
+        return entry.effective_track_number == max_etn
+
+    def _side_flip_targets(self, layout: AlbumLayout, ref_entry: AlbumTrackEntry) -> set[int]:
+        """Unplayed tracks on sides other than ref.side, only when ref is
+        the last track of its side AND silence has lasted long enough."""
+        if ref_entry.side is None:
+            return set()
+        if not self._is_last_track_of_side(layout, ref_entry):
+            return set()
+        if self._silence_streak < SILENCE_FRAMES_FOR_FLIP:
+            return set()
+        return {
+            entry.track_id
+            for entry in layout.by_track_id.values()
+            if entry.side is not None
+            and entry.side != ref_entry.side
+            and entry.track_id not in self._session_played
+        }
+
     def _is_expected_next(self, candidate: MatchCandidate) -> bool:
         """True if `candidate` is the expected next track on the locked album.
-        Sequential case only — side-flip case lands in Task C4."""
+        Covers both the sequential case and the side-flip case."""
         if self._locked_album_id is None:
             return False
         if candidate.album_id != self._locked_album_id:
@@ -283,11 +309,18 @@ class NowPlayingService:
         cand_entry = layout.by_track_id.get(candidate.track_id)
         if ref_entry is None or cand_entry is None:
             return False
-        return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
+        # Sequential (bonus/no-side tracks never qualify as next)
+        if (
+            cand_entry.side is not None
+            and cand_entry.effective_track_number == ref_entry.effective_track_number + 1
+        ):
+            return True
+        # Side-flip
+        return cand_entry.track_id in self._side_flip_targets(layout, ref_entry)
 
     def expected_next_track_ids(self) -> set[int]:
         """Track IDs the matcher should hint for the expected-next case.
-        Sequential case only — side-flip case lands in Task C4."""
+        Covers both the sequential case and the side-flip case."""
         if self._locked_album_id is None:
             return set()
         ref = self._current or self._last_played
@@ -298,11 +331,13 @@ class NowPlayingService:
         if ref_entry is None:
             return set()
         target = ref_entry.effective_track_number + 1
-        return {
+        sequential = {
             entry.track_id
             for entry in layout.by_track_id.values()
-            if entry.effective_track_number == target
+            if entry.side is not None
+            and entry.effective_track_number == target
         }
+        return sequential | self._side_flip_targets(layout, ref_entry)
 
     def apply_boosts(
         self, candidates: list[MatchCandidate]
