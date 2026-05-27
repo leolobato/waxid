@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from typing import Iterable
 
 import numpy as np
 
@@ -13,17 +14,17 @@ logger = logging.getLogger(__name__)
 def match_hashes(
     query_hashes: list[tuple[int, int]], db: Database,
     stoplist: set[int] | None = None,
-    hint_track_id: int | None = None,
+    hint_track_ids: Iterable[int] | None = None,
 ) -> list[dict]:
     """Match query hashes against the database using offset voting.
     Args:
         query_hashes: list of (hash_value, query_frame_time)
         db: Database instance
         stoplist: set of hash values to ignore (too common to be discriminative)
-        hint_track_id: if set, always include this track's best score in the
-            results (even below min_count). Used by the listen loop to feed
-            the state machine a continuous maintain signal for the currently
-            playing track on weak frames.
+        hint_track_ids: track IDs that should always be considered, even if
+            their score doesn't clear min_count. Used by the listen loop to
+            keep the currently-playing track AND the expected-next track(s)
+            visible to the state machine on weak frames.
     Returns:
         List of match results sorted by score descending.
     """
@@ -118,7 +119,8 @@ def match_hashes(
     win = CONFIG.match_win
     track_best: dict[int, tuple[int, int]] = {}
     near_miss: list[tuple[int, int]] = []  # (track_id, best_windowed_score) for below-threshold
-    hint_entry: tuple[int, int] | None = None  # (score, offset) for hint_track_id
+    hint_entries: dict[int, tuple[int, int]] = {}  # tid -> (score, offset) for each hinted track
+    hint_set: set[int] = set(hint_track_ids) if hint_track_ids else set()
 
     # Data is already sorted by (track_id, offset) from np.unique on encoded keys
     # Find boundaries of each track_id
@@ -139,8 +141,8 @@ def match_hashes(
 
         tid = int(u_track_ids[start])
         best_idx_unfiltered = int(np.argmax(windowed))
-        if tid == hint_track_id:
-            hint_entry = (int(windowed[best_idx_unfiltered]), int(s_offsets[best_idx_unfiltered]))
+        if tid in hint_set:
+            hint_entries[tid] = (int(windowed[best_idx_unfiltered]), int(s_offsets[best_idx_unfiltered]))
         above_mask = windowed >= CONFIG.min_count
         if not np.any(above_mask):
             near_miss.append((tid, int(windowed.max())))
@@ -150,9 +152,10 @@ def match_hashes(
         best_idx = np.argmax(windowed_filtered)
         track_best[tid] = (int(windowed[best_idx]), int(s_offsets[best_idx]))
 
-    # Inject the hinted track if it got votes but didn't clear min_count.
-    if hint_track_id is not None and hint_track_id not in track_best and hint_entry is not None:
-        track_best[hint_track_id] = hint_entry
+    # Inject any hinted track that got votes but didn't clear min_count.
+    for hint_tid, hint_entry in hint_entries.items():
+        if hint_tid not in track_best:
+            track_best[hint_tid] = hint_entry
 
     t_scoring = time.perf_counter()
 
