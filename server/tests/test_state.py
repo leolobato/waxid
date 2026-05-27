@@ -669,3 +669,30 @@ class TestCrossAlbumRelease:
         await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
         assert service._locked_album_id == 20
         assert service._session_played == {99}
+
+
+class TestLockRelease:
+    @pytest.mark.asyncio
+    async def test_lock_released_after_sustained_silence(self, service):
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        assert service._locked_album_id == 10
+        # Silence streak reaches the release threshold.
+        for _ in range(20):
+            service.note_silence()
+        await service.feed([])
+        assert service._locked_album_id is None
+        assert service._session_played == set()
+        assert service._last_played is None
+
+    @pytest.mark.asyncio
+    async def test_idle_countdown_clears_lock(self, service):
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        assert service._locked_album_id == 10
+        # Drive the idle path synchronously with a short timeout.
+        service._status = "listening"
+        await service._idle_countdown(0.01)
+        assert service._locked_album_id is None
+        assert service._session_played == set()
+        assert service._silence_streak == 0

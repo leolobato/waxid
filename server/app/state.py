@@ -99,6 +99,7 @@ class NowPlayingService:
     async def feed(self, candidates: list[MatchCandidate], recorded_at: float | None = None) -> None:
         self._last_feed_time = time.time()
         self._restart_idle_timer()
+        self._check_silence_release()
 
         old_status = self._status
         old_track_id = self._current.track_id if self._current else None
@@ -417,6 +418,14 @@ class NowPlayingService:
                 self._anchor_offset = None
                 self._miss_count = 0
 
+    def _check_silence_release(self) -> None:
+        if self._locked_album_id is None:
+            return
+        if self._silence_streak >= SILENCE_FRAMES_FOR_RELEASE:
+            self._locked_album_id = None
+            self._session_played = set()
+            self._last_played = None
+
     def _check_track_ended(self) -> None:
         if self._status != "playing" or self._current is None:
             return
@@ -455,6 +464,9 @@ class NowPlayingService:
             self._anchor_offset = None
             self._buffer.clear()
             self._pending_candidates.clear()
+            self._locked_album_id = None
+            self._session_played = set()
+            self._silence_streak = 0
             if old_status != "idle":
                 await self._notify()
         except asyncio.CancelledError:
