@@ -374,3 +374,25 @@ class TestAlbumLayout:
             assert svc._album_layout_cache == {}
         finally:
             svc.shutdown()
+
+
+class TestSilenceStreak:
+    def test_note_silence_increments_streak(self, service):
+        assert service._silence_streak == 0
+        service.note_silence()
+        service.note_silence()
+        assert service._silence_streak == 2
+
+    def test_note_signal_resets_streak(self, service):
+        service.note_silence()
+        service.note_silence()
+        service.note_signal()
+        assert service._silence_streak == 0
+
+    @pytest.mark.asyncio
+    async def test_feed_is_silence_agnostic(self, service):
+        """feed() does not touch _silence_streak — that's the handler's job."""
+        service.note_silence()
+        service.note_silence()
+        await service.feed([])
+        assert service._silence_streak == 2
