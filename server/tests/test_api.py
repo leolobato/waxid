@@ -536,3 +536,40 @@ def test_listen_passes_expected_next_hints_to_matcher(client, monkeypatch):
     assert resp.status_code == 202
     import time as _t; _t.sleep(0.2)
     assert {1, 2}.issubset(captured.get("hint_track_ids", set())), captured
+
+
+def test_album_delete_clears_lock(client):
+    from app import main as app_main
+    db = app_main.get_db()
+    album_id, _ = db.insert_album(artist="A", name="Al", year=2020)
+    track_id = db.insert_track(album_id, "A", "Al", "T1", track_number=1)
+    db.insert_hashes([(1, track_id, 0)])
+
+    svc = app_main.now_playing
+    svc._locked_album_id = album_id
+    svc._session_played = {track_id}
+    svc._album_layout(album_id)  # populate cache
+
+    resp = client.delete(f"/albums/{album_id}")
+    assert resp.status_code in (200, 204)
+    assert svc._locked_album_id is None
+    assert svc._session_played == set()
+    assert album_id not in svc._album_layout_cache
+
+
+def test_track_delete_invalidates_layout(client):
+    from app import main as app_main
+    db = app_main.get_db()
+    album_id, _ = db.insert_album(artist="A", name="Al", year=2020)
+    t1 = db.insert_track(album_id, "A", "Al", "T1", track_number=1)
+    t2 = db.insert_track(album_id, "A", "Al", "T2", track_number=2)
+    db.insert_hashes([(1, t1, 0), (2, t2, 1)])
+
+    svc = app_main.now_playing
+    svc._album_layout(album_id)
+    svc._session_played = {t1, t2}
+
+    resp = client.delete(f"/tracks/{t1}")
+    assert resp.status_code in (200, 204)
+    assert album_id not in svc._album_layout_cache
+    assert svc._session_played == {t2}

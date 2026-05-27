@@ -334,6 +334,7 @@ async def delete_album(album_id: int):
     cover_path = album.get("cover_path")
     if not db.delete_album(album_id):
         raise HTTPException(status_code=404, detail="Album not found")
+    now_playing.on_album_deleted(album_id)
     if cover_path:
         cover_file = Path(_get_db_path()).parent / "covers" / cover_path
         try:
@@ -361,6 +362,7 @@ async def update_album(album_id: int, body: AlbumUpdate):
         raise
     if updated is None:
         raise HTTPException(404, "Album not found")
+    now_playing.clear_album_cache(album_id)
     tracks = db.get_tracks_for_album(album_id)
     return AlbumInfo(
         album_id=updated["album_id"],
@@ -414,6 +416,7 @@ async def apply_discogs(album_id: int):
                 "position": position,
             })
 
+    now_playing.clear_album_cache(album_id)
     return {"updated_count": len(updated), "tracks": updated}
 
 
@@ -716,13 +719,20 @@ async def update_track(track_id: int, body: TrackUpdate):
     )
     if updated is None:
         raise HTTPException(404, "Track not found")
+    now_playing.clear_album_cache(updated["album_id"])
     return updated
 
 
 @app.delete("/tracks/{track_id}")
 async def delete_track(track_id: int):
-    if not get_db().delete_track(track_id):
+    db = get_db()
+    track = db.get_track(track_id)
+    if track is None:
         raise HTTPException(status_code=404, detail="Track not found")
+    album_id = track["album_id"]
+    if not db.delete_track(track_id):
+        raise HTTPException(status_code=404, detail="Track not found")
+    now_playing.on_track_deleted(track_id, album_id)
     return {"deleted": True}
 
 
