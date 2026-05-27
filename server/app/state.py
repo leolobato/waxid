@@ -1,5 +1,7 @@
 import asyncio
+import re
 import time
+from dataclasses import dataclass
 from typing import AsyncGenerator, Callable
 
 from .models import MatchCandidate, NowPlayingResponse
@@ -11,6 +13,40 @@ REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
 IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
+
+
+@dataclass
+class AlbumTrackEntry:
+    track_id: int
+    album_id: int
+    side: str | None
+    position: str | None
+    track_number: int | None
+    effective_track_number: int
+
+
+@dataclass
+class AlbumLayout:
+    by_track_id: dict[int, AlbumTrackEntry]
+    sides: dict[str | None, list[AlbumTrackEntry]]
+
+
+_POSITION_NUMBER_RE = re.compile(r"(\d+)\s*$")
+
+
+def _parse_position_number(position: str | None) -> int | None:
+    if not position:
+        return None
+    m = _POSITION_NUMBER_RE.search(position)
+    return int(m.group(1)) if m else None
+
+
+def _secondary_sort_key(track: dict) -> int:
+    pos_num = _parse_position_number(track.get("position"))
+    if pos_num is not None:
+        return pos_num
+    tn = track.get("track_number")
+    return int(tn) if tn is not None else 0
 
 
 class NowPlayingService:
@@ -31,6 +67,7 @@ class NowPlayingService:
         self._ready_event = asyncio.Event()
         self._last_feed_time: float | None = None
         self._miss_count: int = 0
+        self._album_layout_cache: dict[int, AlbumLayout] = {}
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -141,6 +178,45 @@ class NowPlayingService:
         if self._status == "playing" and self._current is not None:
             return self._current.track_id
         return None
+
+    def _album_layout(self, album_id: int) -> AlbumLayout:
+        cached = self._album_layout_cache.get(album_id)
+        if cached is not None:
+            return cached
+
+        rows = self._get_tracks_for_album(album_id)
+
+        def sort_key(track: dict):
+            side = track.get("side")
+            # None side sorts last via a sentinel.
+            side_key = (1, "") if side is None else (0, side)
+            return (side_key, _secondary_sort_key(track), int(track["track_id"]))
+
+        ordered = sorted(rows, key=sort_key)
+
+        by_track_id: dict[int, AlbumTrackEntry] = {}
+        sides: dict[str | None, list[AlbumTrackEntry]] = {}
+        for i, row in enumerate(ordered, start=1):
+            entry = AlbumTrackEntry(
+                track_id=int(row["track_id"]),
+                album_id=int(row["album_id"]),
+                side=row.get("side"),
+                position=row.get("position"),
+                track_number=row.get("track_number"),
+                effective_track_number=i,
+            )
+            by_track_id[entry.track_id] = entry
+            sides.setdefault(entry.side, []).append(entry)
+
+        layout = AlbumLayout(by_track_id=by_track_id, sides=sides)
+        self._album_layout_cache[album_id] = layout
+        return layout
+
+    def clear_album_cache(self, album_id: int | None = None) -> None:
+        if album_id is None:
+            self._album_layout_cache.clear()
+        else:
+            self._album_layout_cache.pop(album_id, None)
 
     def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
         return candidates[0] if candidates else None

@@ -227,3 +227,81 @@ class TestSubscription:
         task = asyncio.create_task(listener())
         await asyncio.wait_for(task, timeout=1.0)
         assert received == [None]
+
+
+class TestAlbumLayout:
+    def _layout_svc(self, tracks):
+        """NowPlayingService wired to return the given tracks for album_id=10."""
+        def fake_get(album_id):
+            assert album_id == 10
+            return tracks
+        return NowPlayingService(get_tracks_for_album=fake_get)
+
+    def test_effective_track_number_orders_by_side_and_position(self):
+        tracks = [
+            {"track_id": 100, "album_id": 10, "side": "B", "position": "B2", "track_number": 6},
+            {"track_id": 101, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 102, "album_id": 10, "side": "B", "position": "B1", "track_number": 5},
+            {"track_id": 103, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            layout = svc._album_layout(10)
+            ordered = sorted(layout.by_track_id.values(),
+                             key=lambda t: t.effective_track_number)
+            assert [t.track_id for t in ordered] == [101, 103, 102, 100]
+            assert [t.effective_track_number for t in ordered] == [1, 2, 3, 4]
+        finally:
+            svc.shutdown()
+
+    def test_effective_track_number_falls_back_to_position(self):
+        # All track_number are None; ordering must still match positions.
+        tracks = [
+            {"track_id": 200, "album_id": 10, "side": "B", "position": "B1", "track_number": None},
+            {"track_id": 201, "album_id": 10, "side": "B", "position": "B2", "track_number": None},
+            {"track_id": 202, "album_id": 10, "side": "A", "position": "A1", "track_number": None},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            layout = svc._album_layout(10)
+            ordered = sorted(layout.by_track_id.values(),
+                             key=lambda t: t.effective_track_number)
+            assert [t.track_id for t in ordered] == [202, 200, 201]
+        finally:
+            svc.shutdown()
+
+    def test_effective_track_number_mixed_metadata_orders_by_position(self):
+        """Spec §3a regression: B1 with track_number=5 must precede B2 with only position."""
+        tracks = [
+            {"track_id": 300, "album_id": 10, "side": "B", "position": "B2", "track_number": None},
+            {"track_id": 301, "album_id": 10, "side": "B", "position": "B1", "track_number": 5},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            layout = svc._album_layout(10)
+            ordered = sorted(layout.by_track_id.values(),
+                             key=lambda t: t.effective_track_number)
+            assert [t.track_id for t in ordered] == [301, 300]
+        finally:
+            svc.shutdown()
+
+    def test_clear_album_cache_drops_entry(self):
+        tracks = [{"track_id": 400, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._album_layout(10)
+            assert 10 in svc._album_layout_cache
+            svc.clear_album_cache(10)
+            assert 10 not in svc._album_layout_cache
+        finally:
+            svc.shutdown()
+
+    def test_clear_album_cache_none_clears_all(self):
+        tracks = [{"track_id": 400, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._album_layout(10)
+            svc.clear_album_cache(None)
+            assert svc._album_layout_cache == {}
+        finally:
+            svc.shutdown()
