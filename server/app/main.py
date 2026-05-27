@@ -28,7 +28,7 @@ from .models import (
     AlbumCreate, AlbumInfo, AlbumDetail, AlbumUpdate, TrackUpdate,
     NowPlayingResponse,
 )
-from .state import NowPlayingService, SILENCE_RMS_DBFS
+from .state import NowPlayingService, SILENCE_RMS_DBFS, HASH_MIN_COUNT
 from .discogs import fetch_discogs_tracklist, lookup_discogs_position
 from .settings import Settings, load_settings, save_settings
 from .roon import RoonNotifier
@@ -664,6 +664,11 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
             logger.info("Listen: silence (rms=%.1f dBFS)", rms_dbfs)
             return
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
+        if len(query_hashes) < HASH_MIN_COUNT:
+            now_playing.note_silence()
+            await now_playing.feed([], recorded_at=recorded_at)
+            logger.info("Listen: low hash density (hashes=%d)", len(query_hashes))
+            return
         logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
         hint_track_ids: set[int] = set()
         cur = now_playing.current_track_id()
