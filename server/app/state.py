@@ -229,16 +229,20 @@ class NowPlayingService:
 
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
         """Check if candidate is the next track on the same album.
-        Uses _current if playing, or _last_played if we're in a between-tracks gap."""
+        Uses _current if playing, or _last_played if we're in a between-tracks gap.
+        Falls back to effective_track_number derived from position when raw
+        track_number is missing on either side."""
         ref = self._current or self._last_played
         if ref is None:
             return False
-        if ref.track_number is None or candidate.track_number is None:
+        if candidate.album_id != ref.album_id:
             return False
-        return (
-            candidate.album_id == ref.album_id
-            and candidate.track_number == ref.track_number + 1
-        )
+        layout = self._album_layout(ref.album_id)
+        ref_entry = layout.by_track_id.get(ref.track_id)
+        cand_entry = layout.by_track_id.get(candidate.track_id)
+        if ref_entry is None or cand_entry is None:
+            return False
+        return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
         self._current = candidate

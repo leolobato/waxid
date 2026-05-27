@@ -24,6 +24,25 @@ def service():
     svc.shutdown()
 
 
+# Album layout for album_id=1: two tracks in order.
+_ALBUM1_TRACKS = [
+    {"track_id": 1, "album_id": 1, "side": "A", "position": "A1", "track_number": 1},
+    {"track_id": 2, "album_id": 1, "side": "A", "position": "A2", "track_number": 2},
+]
+
+
+def _album1_get_tracks(album_id: int) -> list[dict]:
+    return _ALBUM1_TRACKS if album_id == 1 else []
+
+
+@pytest.fixture
+def sequential_service():
+    """NowPlayingService with a real album layout for album_id=1 (track_ids 1 and 2)."""
+    svc = NowPlayingService(get_tracks_for_album=_album1_get_tracks)
+    yield svc
+    svc.shutdown()
+
+
 class TestInitialState:
     def test_starts_idle(self, service):
         state = service.get_state()
@@ -77,48 +96,50 @@ class TestStability:
 
 class TestSequentialTrackShortcut:
     @pytest.mark.asyncio
-    async def test_next_track_auto_promotes(self, service):
+    async def test_next_track_auto_promotes(self, sequential_service):
         c1 = make_candidate(track_id=1, track_number=1)
-        await service.feed([c1])
-        await service.feed([c1])
-        assert service.get_state().status == "playing"
-        assert service.get_state().track_id == 1
+        await sequential_service.feed([c1])
+        await sequential_service.feed([c1])
+        assert sequential_service.get_state().status == "playing"
+        assert sequential_service.get_state().track_id == 1
 
         c2 = make_candidate(track_id=2, track_number=2)
-        await service.feed([c2])
-        assert service.get_state().status == "playing"
-        assert service.get_state().track_id == 2
+        await sequential_service.feed([c2])
+        assert sequential_service.get_state().status == "playing"
+        assert sequential_service.get_state().track_id == 2
 
     @pytest.mark.asyncio
-    async def test_shortcut_requires_same_album(self, service):
+    async def test_shortcut_requires_same_album(self, sequential_service):
         c1 = make_candidate(track_id=1, album_id=1, track_number=1)
-        await service.feed([c1])
-        await service.feed([c1])
-        assert service.get_state().status == "playing"
+        await sequential_service.feed([c1])
+        await sequential_service.feed([c1])
+        assert sequential_service.get_state().status == "playing"
 
         c2 = make_candidate(track_id=2, album_id=99, track_number=2)
-        await service.feed([c2])
-        assert service.get_state().track_id != 2
+        await sequential_service.feed([c2])
+        assert sequential_service.get_state().track_id != 2
 
     @pytest.mark.asyncio
-    async def test_shortcut_requires_non_none_track_numbers(self, service):
+    async def test_shortcut_requires_track_in_layout(self, sequential_service):
+        """Candidate with a track_id absent from the layout cache is not promoted sequentially."""
         c1 = make_candidate(track_id=1, track_number=1)
-        await service.feed([c1])
-        await service.feed([c1])
+        await sequential_service.feed([c1])
+        await sequential_service.feed([c1])
 
-        c2 = make_candidate(track_id=2, track_number=None)
-        await service.feed([c2])
-        assert service.get_state().track_id == 1
+        # track_id=99 is not in album 1's layout, so the shortcut returns False.
+        c2 = make_candidate(track_id=99, track_number=2)
+        await sequential_service.feed([c2])
+        assert sequential_service.get_state().track_id == 1
 
     @pytest.mark.asyncio
-    async def test_shortcut_requires_min_score(self, service):
+    async def test_shortcut_requires_min_score(self, sequential_service):
         c1 = make_candidate(track_id=1, track_number=1)
-        await service.feed([c1])
-        await service.feed([c1])
+        await sequential_service.feed([c1])
+        await sequential_service.feed([c1])
 
         c2 = make_candidate(track_id=2, track_number=2, score=5)
-        await service.feed([c2])
-        assert service.get_state().track_id == 1
+        await sequential_service.feed([c2])
+        assert sequential_service.get_state().track_id == 1
 
 
 class TestPositionClock:
@@ -182,18 +203,18 @@ class TestIdleTimer:
 
 class TestSequentialShortcutClearsBuffer:
     @pytest.mark.asyncio
-    async def test_buffer_cleared_after_shortcut(self, service):
+    async def test_buffer_cleared_after_shortcut(self, sequential_service):
         c1 = make_candidate(track_id=1, track_number=1)
-        await service.feed([c1])
-        await service.feed([c1])
-        assert service.get_state().status == "playing"
+        await sequential_service.feed([c1])
+        await sequential_service.feed([c1])
+        assert sequential_service.get_state().status == "playing"
 
         c2 = make_candidate(track_id=2, track_number=2)
-        await service.feed([c2])
-        assert service.get_state().track_id == 2
-        await service.feed([])
-        assert service.get_state().status == "playing"
-        assert service.get_state().track_id == 2
+        await sequential_service.feed([c2])
+        assert sequential_service.get_state().track_id == 2
+        await sequential_service.feed([])
+        assert sequential_service.get_state().status == "playing"
+        assert sequential_service.get_state().track_id == 2
 
 
 class TestSubscription:
@@ -227,6 +248,54 @@ class TestSubscription:
         task = asyncio.create_task(listener())
         await asyncio.wait_for(task, timeout=1.0)
         assert received == [None]
+
+
+class TestSequentialWithEffectiveOrder:
+    def _svc_for_album(self, tracks):
+        return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
+
+    def test_sequential_promote_works_with_missing_track_number(self):
+        """The Dona Olimpia regression: both ref and candidate lack track_number."""
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "B", "position": "B1", "track_number": None},
+            {"track_id": 2, "album_id": 10, "side": "B", "position": "B2", "track_number": None},
+        ]
+        svc = self._svc_for_album(tracks)
+        try:
+            ref = make_candidate(track_id=1, album_id=10, track_number=None)
+            cand = make_candidate(track_id=2, album_id=10, track_number=None, score=10)
+            svc._last_played = ref
+            assert svc._is_sequential_track(cand) is True
+        finally:
+            svc.shutdown()
+
+    def test_sequential_promote_still_works_when_track_number_present(self):
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ]
+        svc = self._svc_for_album(tracks)
+        try:
+            ref = make_candidate(track_id=1, album_id=10, track_number=1)
+            cand = make_candidate(track_id=2, album_id=10, track_number=2, score=10)
+            svc._last_played = ref
+            assert svc._is_sequential_track(cand) is True
+        finally:
+            svc.shutdown()
+
+    def test_sequential_returns_false_across_albums(self):
+        tracks_a = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+        ]
+        # Layout cache for album 10 only; album 20 returns empty.
+        svc = NowPlayingService(get_tracks_for_album=lambda aid: tracks_a if aid == 10 else [])
+        try:
+            ref = make_candidate(track_id=1, album_id=10, track_number=1)
+            cand = make_candidate(track_id=99, album_id=20, track_number=1, score=10)
+            svc._last_played = ref
+            assert svc._is_sequential_track(cand) is False
+        finally:
+            svc.shutdown()
 
 
 class TestAlbumLayout:
