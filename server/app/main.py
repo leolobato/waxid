@@ -20,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 
 from .config import CONFIG
 from .db import Database
-from .fingerprint import fingerprint_audio
+from .fingerprint import fingerprint_audio, compute_rms_dbfs
 from .matcher import match_hashes
 from .models import (
     IngestResponse, MatchResponse, MatchCandidate,
@@ -28,7 +28,7 @@ from .models import (
     AlbumCreate, AlbumInfo, AlbumDetail, AlbumUpdate, TrackUpdate,
     NowPlayingResponse,
 )
-from .state import NowPlayingService
+from .state import NowPlayingService, SILENCE_RMS_DBFS
 from .discogs import fetch_discogs_tracklist, lookup_discogs_position
 from .settings import Settings, load_settings, save_settings
 from .roon import RoonNotifier
@@ -657,6 +657,12 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
     try:
         logger.debug("Listen: processing %d bytes", len(audio_bytes))
         start = time.time()
+        rms_dbfs = await asyncio.to_thread(compute_rms_dbfs, audio_bytes)
+        if rms_dbfs < SILENCE_RMS_DBFS:
+            now_playing.note_silence()
+            await now_playing.feed([], recorded_at=recorded_at)
+            logger.info("Listen: silence (rms=%.1f dBFS)", rms_dbfs)
+            return
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
         logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
         hint_track_ids: set[int] = set()
