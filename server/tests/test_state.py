@@ -742,6 +742,47 @@ class TestDeletionHooks:
         finally:
             svc.shutdown()
 
+    def test_on_album_deleted_drops_current_track_if_on_deleted_album(self):
+        svc = self._layout_svc([])
+        try:
+            cur = make_candidate(track_id=1, album_id=10, score=20)
+            svc._current = cur
+            svc._status = "playing"
+            svc._last_played = cur
+            svc._locked_album_id = 10
+            svc.on_album_deleted(10)
+            assert svc._current is None
+            assert svc._last_played is None
+            assert svc._status == "listening"
+        finally:
+            svc.shutdown()
+
+    def test_on_album_deleted_leaves_current_when_other_album_deleted(self):
+        svc = self._layout_svc([])
+        try:
+            cur = make_candidate(track_id=1, album_id=10, score=20)
+            svc._current = cur
+            svc._status = "playing"
+            svc.on_album_deleted(99)
+            assert svc._current is cur
+            assert svc._status == "playing"
+        finally:
+            svc.shutdown()
+
+    def test_on_track_deleted_drops_current_track_if_deleted(self):
+        svc = self._layout_svc([])
+        try:
+            cur = make_candidate(track_id=5, album_id=10, score=20)
+            svc._current = cur
+            svc._status = "playing"
+            svc._last_played = cur
+            svc.on_track_deleted(5, 10)
+            assert svc._current is None
+            assert svc._last_played is None
+            assert svc._status == "listening"
+        finally:
+            svc.shutdown()
+
 
 class TestDonaOlimpiaRegression:
     """Recreates the failure documented in the spec: a sparse next-track

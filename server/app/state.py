@@ -247,14 +247,27 @@ class NowPlayingService:
 
     def on_album_deleted(self, album_id: int) -> None:
         self.clear_album_cache(album_id)
+        if self._current is not None and self._current.album_id == album_id:
+            self._current = None
+            self._anchor_time = None
+            self._anchor_offset = None
+            self._status = "listening"
+        if self._last_played is not None and self._last_played.album_id == album_id:
+            self._last_played = None
         if self._locked_album_id == album_id:
             self._locked_album_id = None
             self._session_played = set()
-            self._last_played = None
 
     def on_track_deleted(self, track_id: int, album_id: int) -> None:
         self.clear_album_cache(album_id)
         self._session_played.discard(track_id)
+        if self._current is not None and self._current.track_id == track_id:
+            self._current = None
+            self._anchor_time = None
+            self._anchor_offset = None
+            self._status = "listening"
+        if self._last_played is not None and self._last_played.track_id == track_id:
+            self._last_played = None
 
     def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
         return candidates[0] if candidates else None

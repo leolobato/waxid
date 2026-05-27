@@ -107,7 +107,7 @@ def fingerprint_audio(audio_bytes: bytes) -> list[tuple[int, int]]:
 
 
 def compute_rms_dbfs(audio_bytes: bytes) -> float:
-    """Return the RMS energy of a WAV blob in dBFS (0 dBFS = full-scale int16)."""
+    """Return the RMS energy of a WAV blob in dBFS (0 dBFS = full-scale)."""
     import wave
     import io
     import math
@@ -116,7 +116,15 @@ def compute_rms_dbfs(audio_bytes: bytes) -> float:
         frames = w.readframes(w.getnframes())
     if not frames:
         return -math.inf
-    dtype = np.int16 if sample_width == 2 else np.int8
+    if sample_width == 1:
+        dtype = np.int8
+    elif sample_width == 2:
+        dtype = np.int16
+    elif sample_width == 4:
+        dtype = np.int32
+    else:
+        # 24-bit and exotic widths aren't expected from the Android client.
+        raise ValueError(f"Unsupported sample width: {sample_width} bytes")
     samples = np.frombuffer(frames, dtype=dtype).astype(np.float64)
     if samples.size == 0:
         return -math.inf
