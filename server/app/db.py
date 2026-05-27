@@ -193,19 +193,19 @@ class Database:
         )
         self.conn.commit()
 
-    def lookup_hashes(self, hash_values: list[int], batch_size: int = 500) -> dict[int, list[tuple[int, int]]]:
+    def lookup_hashes(self, hash_values: list[int]) -> dict[int, list[tuple[int, int]]]:
         if not hash_values:
             return {}
         result: dict[int, list[tuple[int, int]]] = defaultdict(list)
-        for i in range(0, len(hash_values), batch_size):
-            batch = hash_values[i:i + batch_size]
-            placeholders = ",".join("?" for _ in batch)
-            rows = self.conn.execute(
-                f"SELECT hash, track_id, t_frame FROM hashes WHERE hash IN ({placeholders})",
-                batch,
-            ).fetchall()
-            for row in rows:
-                result[row[0]].append((row[1], row[2]))
+        self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS query_hashes (hash INTEGER NOT NULL)")
+        self.conn.execute("DELETE FROM query_hashes")
+        self.conn.executemany("INSERT INTO query_hashes VALUES (?)", [(h,) for h in hash_values])
+        rows = self.conn.execute(
+            "SELECT h.hash, h.track_id, h.t_frame "
+            "FROM hashes h INNER JOIN query_hashes q ON h.hash = q.hash"
+        ).fetchall()
+        for row in rows:
+            result[row[0]].append((row[1], row[2]))
         return dict(result)
 
     def lookup_hashes_flat(self, hash_values: list[int], batch_size: int = 8000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

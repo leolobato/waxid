@@ -33,8 +33,8 @@ def test_match_confidence_ratio(db_with_track):
     db, track_id = db_with_track
     album_id, _ = db.insert_album(artist="Other", name="Album2")
     track_id2 = db.insert_track(album_id=album_id, artist="Other", album="Album2", track="Song2")
-    db.insert_hashes([(1000 + i, track_id2, i * 5 + 100) for i in range(10, 20)])
-    query_hashes = [(1000 + i, i * 5 - 50) for i in range(10, 30)]
+    db.insert_hashes([(1000 + i, track_id2, i * 5 + 100) for i in range(10, 30)])
+    query_hashes = [(1000 + i, i * 5 - 50) for i in range(10, 50)]
     results = match_hashes(query_hashes, db)
     assert len(results) >= 2, "Should match both tracks"
     assert results[0]["track_id"] == track_id, "First track should win"

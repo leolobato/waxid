@@ -696,3 +696,48 @@ class TestLockRelease:
         assert service._locked_album_id is None
         assert service._session_played == set()
         assert service._silence_streak == 0
+
+
+class TestDeletionHooks:
+    def _layout_svc(self, tracks):
+        return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
+
+    def test_on_album_deleted_clears_lock_if_locked(self):
+        svc = self._layout_svc([
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+        ])
+        try:
+            svc._locked_album_id = 10
+            svc._session_played = {1}
+            svc._album_layout(10)
+            svc.on_album_deleted(10)
+            assert svc._locked_album_id is None
+            assert svc._session_played == set()
+            assert 10 not in svc._album_layout_cache
+        finally:
+            svc.shutdown()
+
+    def test_on_album_deleted_other_album_leaves_lock(self):
+        svc = self._layout_svc([])
+        try:
+            svc._locked_album_id = 10
+            svc._session_played = {1}
+            svc.on_album_deleted(99)
+            assert svc._locked_album_id == 10
+            assert svc._session_played == {1}
+        finally:
+            svc.shutdown()
+
+    def test_on_track_deleted_invalidates_layout_and_removes_from_session(self):
+        svc = self._layout_svc([
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ])
+        try:
+            svc._album_layout(10)
+            svc._session_played = {1, 2}
+            svc.on_track_deleted(1, 10)
+            assert 10 not in svc._album_layout_cache
+            assert svc._session_played == {2}
+        finally:
+            svc.shutdown()

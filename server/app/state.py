@@ -243,6 +243,17 @@ class NowPlayingService:
         else:
             self._album_layout_cache.pop(album_id, None)
 
+    def on_album_deleted(self, album_id: int) -> None:
+        self.clear_album_cache(album_id)
+        if self._locked_album_id == album_id:
+            self._locked_album_id = None
+            self._session_played = set()
+            self._last_played = None
+
+    def on_track_deleted(self, track_id: int, album_id: int) -> None:
+        self.clear_album_cache(album_id)
+        self._session_played.discard(track_id)
+
     def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
         return candidates[0] if candidates else None
 
