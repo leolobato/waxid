@@ -116,22 +116,25 @@ def compute_rms_dbfs(audio_bytes: bytes) -> float:
         frames = w.readframes(w.getnframes())
     if not frames:
         return -math.inf
+    # Per the WAV spec, 8-bit samples are unsigned (0..255 centered at 128);
+    # 16-bit and 32-bit are signed.
     if sample_width == 1:
-        dtype = np.int8
+        samples = np.frombuffer(frames, dtype=np.uint8).astype(np.float64) - 128.0
+        full_scale = 128.0
     elif sample_width == 2:
-        dtype = np.int16
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float64)
+        full_scale = float(np.iinfo(np.int16).max)
     elif sample_width == 4:
-        dtype = np.int32
+        samples = np.frombuffer(frames, dtype=np.int32).astype(np.float64)
+        full_scale = float(np.iinfo(np.int32).max)
     else:
         # 24-bit and exotic widths aren't expected from the Android client.
         raise ValueError(f"Unsupported sample width: {sample_width} bytes")
-    samples = np.frombuffer(frames, dtype=dtype).astype(np.float64)
     if samples.size == 0:
         return -math.inf
     rms = math.sqrt(float(np.mean(samples ** 2)))
     if rms <= 0:
         return -math.inf
-    full_scale = float(np.iinfo(dtype).max)
     return 20.0 * math.log10(rms / full_scale)
 
 

@@ -175,16 +175,18 @@ class TestPositionClock:
 
 class TestIdleTimer:
     @pytest.mark.asyncio
-    async def test_idle_after_timeout(self, service):
-        service._idle_timeout_s = 0.1
+    async def test_idle_after_timeout(self, service, monkeypatch):
+        from app import state as state_module
+        monkeypatch.setattr(state_module, "IDLE_TIMEOUT_LISTENING_S", 0.1)
         await service.feed([make_candidate()])
         assert service.get_state().status == "listening"
         await asyncio.sleep(0.2)
         assert service.get_state().status == "idle"
 
     @pytest.mark.asyncio
-    async def test_feed_resets_idle_timer(self, service):
-        service._idle_timeout_s = 0.2
+    async def test_feed_resets_idle_timer(self, service, monkeypatch):
+        from app import state as state_module
+        monkeypatch.setattr(state_module, "IDLE_TIMEOUT_LISTENING_S", 0.2)
         await service.feed([make_candidate()])
         await asyncio.sleep(0.1)
         await service.feed([make_candidate()])
@@ -192,8 +194,13 @@ class TestIdleTimer:
         assert service.get_state().status != "idle"
 
     @pytest.mark.asyncio
-    async def test_idle_from_playing_state(self, service):
-        service._idle_timeout_s = 0.1
+    async def test_idle_from_playing_state(self, service, monkeypatch):
+        from app import state as state_module
+        # _restart_idle_timer reads the status BEFORE the promotion fires
+        # inside the same feed call, so the timeout in use is the
+        # LISTENING one even though the test ends up in "playing".
+        monkeypatch.setattr(state_module, "IDLE_TIMEOUT_LISTENING_S", 0.1)
+        monkeypatch.setattr(state_module, "IDLE_TIMEOUT_PLAYING_S", 0.1)
         c = make_candidate()
         await service.feed([c])
         await service.feed([c])
