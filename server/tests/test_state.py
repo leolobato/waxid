@@ -650,3 +650,22 @@ class TestSideFlipExpectedNext:
             assert 30 not in svc.expected_next_track_ids()
         finally:
             svc.shutdown()
+
+
+class TestCrossAlbumRelease:
+    @pytest.mark.asyncio
+    async def test_lock_moves_when_off_album_wins_stability(self, service):
+        # Lock on album 10.
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
+        assert service._locked_album_id == 10
+        # Drop back to listening so stability buffer starts fresh.
+        service._current = None
+        service._status = "listening"
+        service._buffer.clear()
+        service._pending_candidates.clear()
+        # Two strong frames for an off-album candidate trigger stability promotion.
+        await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
+        await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
+        assert service._locked_album_id == 20
+        assert service._session_played == {99}
