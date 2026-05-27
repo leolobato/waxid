@@ -40,3 +40,29 @@ def test_match_confidence_ratio(db_with_track):
     assert results[0]["track_id"] == track_id, "First track should win"
     assert results[0]["confidence"] is not None
     assert results[0]["confidence"] > 1.0
+
+
+def test_hint_track_ids_injects_each_below_threshold_track(tmp_path):
+    """Multiple hinted tracks below CONFIG.min_count are all re-injected."""
+    db = Database(str(tmp_path / "fp.db"))
+    try:
+        album_id, _ = db.insert_album(artist="A", name="Al", year=2020)
+        t1 = db.insert_track(album_id, "A", "Al", "T1", track_number=1)
+        t2 = db.insert_track(album_id, "A", "Al", "T2", track_number=2)
+        t3 = db.insert_track(album_id, "A", "Al", "T3", track_number=3)
+        # Insert just a handful of hashes per track (well below min_count).
+        for tid in (t1, t2, t3):
+            for f in range(3):
+                db.insert_hashes([(1000 + f, tid, f)])
+
+        # Query with the same hashes; without hints, none would clear min_count.
+        query = [(1000 + f, f) for f in range(3)]
+
+        no_hint = match_hashes(query, db, stoplist=None, hint_track_ids=None)
+        assert no_hint == []
+
+        with_hints = match_hashes(query, db, stoplist=None, hint_track_ids=[t1, t2, t3])
+        returned_ids = {r["track_id"] for r in with_hints}
+        assert {t1, t2, t3}.issubset(returned_ids), with_hints
+    finally:
+        db.close()
