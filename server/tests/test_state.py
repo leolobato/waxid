@@ -441,3 +441,113 @@ class TestAlbumLock:
         await service.feed([cand2])
         assert service._locked_album_id == 10
         assert service._session_played == {1, 2}
+
+
+class TestApplyBoosts:
+    def _layout_svc(self, tracks):
+        return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
+
+    def test_unlocked_returns_scores_unchanged(self):
+        svc = self._layout_svc([])
+        try:
+            c = make_candidate(track_id=1, album_id=10, score=7)
+            boosted, infos = svc.apply_boosts([c])
+            assert boosted[0].score == 7
+            assert infos[0].raw_score == 7
+            assert infos[0].boost == 1.0
+        finally:
+            svc.shutdown()
+
+    def test_on_album_candidate_gets_1_5(self):
+        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            c = make_candidate(track_id=1, album_id=10, score=7)
+            boosted, infos = svc.apply_boosts([c])
+            import math
+            assert boosted[0].score == math.ceil(7 * 1.5)
+            assert infos[0].raw_score == 7
+            assert infos[0].boost == 1.5
+        finally:
+            svc.shutdown()
+
+    def test_off_album_when_locked_unchanged(self):
+        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            c = make_candidate(track_id=99, album_id=20, score=7)
+            boosted, infos = svc.apply_boosts([c])
+            assert boosted[0].score == 7
+            assert infos[0].boost == 1.0
+        finally:
+            svc.shutdown()
+
+    def test_expected_next_sequential_gets_2_5(self):
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
+            c = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
+            boosted, infos = svc.apply_boosts([c])
+            import math
+            assert boosted[0].score == math.ceil(5 * 2.5)
+            assert infos[0].boost == 2.5
+        finally:
+            svc.shutdown()
+
+    def test_boosted_score_is_int(self):
+        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            c = make_candidate(track_id=1, album_id=10, score=3)
+            boosted, _ = svc.apply_boosts([c])
+            # ceil(3 * 1.5) = 5, must be int (not 4.5 or 4)
+            assert boosted[0].score == 5
+            assert isinstance(boosted[0].score, int)
+        finally:
+            svc.shutdown()
+
+    def test_apply_boosts_resorts_by_boosted_score(self):
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
+            off = make_candidate(track_id=99, album_id=20, score=8)
+            nxt = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
+            boosted, _ = svc.apply_boosts([off, nxt])
+            # expected-next: 5 * 2.5 = 13 beats off-album 8
+            assert boosted[0].track_id == 2
+            assert boosted[1].track_id == 99
+        finally:
+            svc.shutdown()
+
+    def test_expected_next_track_ids_default(self):
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        ]
+        svc = self._layout_svc(tracks)
+        try:
+            svc._locked_album_id = 10
+            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
+            assert svc.expected_next_track_ids() == {2}
+        finally:
+            svc.shutdown()
+
+    def test_expected_next_track_ids_empty_when_unlocked(self):
+        svc = self._layout_svc([])
+        try:
+            assert svc.expected_next_track_ids() == set()
+        finally:
+            svc.shutdown()
