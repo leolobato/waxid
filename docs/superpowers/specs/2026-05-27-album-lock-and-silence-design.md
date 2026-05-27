@@ -43,7 +43,16 @@ Listen: silence (rms=-52.3 dBFS)
 Listen: low hash density (hashes=87)
 ```
 
-Both gates also call `NowPlayingService.note_silence()`, which increments the silence streak counter. Any non-silent feed resets the streak to 0.
+Streak management is **explicit and decoupled from `feed()`**. The listen handler always calls exactly one of `note_silence()` / `note_signal()` per chunk, paired with a `feed(...)` call:
+
+| Path | Streak call | Feed call |
+|---|---|---|
+| RMS gate fires | `note_silence()` | `feed([])` |
+| Hash-density gate fires | `note_silence()` | `feed([])` |
+| Both gates pass, matcher returns candidates | `note_signal()` | `feed(apply_boosts(candidates))` |
+| Both gates pass, matcher returns no candidates | `note_signal()` | `feed([])` |
+
+`note_silence()` increments `_silence_streak`; `note_signal()` resets it to 0. `feed()` itself is silence-agnostic, so the previous "non-silent music with zero matches" hole — where unmatched music could keep an old silence streak alive — is closed.
 
 Rationale for two gates: RMS catches dead silence cheaply (saves fingerprinting cost); hash-density catches the harder case of vinyl crackle / runout groove that has real audio energy but no stable spectral peaks. Surface noise can still occasionally produce enough hashes to slip through both gates — the album-lock + cross-album-release logic below is the second line of defence.
 
@@ -115,12 +124,14 @@ class AlbumTrackEntry:
 
 **Deriving `effective_track_number`:**
 
-1. Fetch all tracks for the album from the DB.
+1. Fetch all tracks for the album via the injected `get_tracks_for_album(album_id)` callable (see §9).
 2. Sort them by a composite key:
    - Primary: `side` (None last; otherwise lexicographic — `"A" < "B" < ...`).
-   - Secondary: `track_number` if set, else parsed numeric suffix of `position` (e.g. `"A3"` → `3`), else 0.
+   - Secondary: parsed numeric suffix of `position` (e.g. `"A3"` → `3`, `"B12"` → `12`) if `position` is set and contains a parseable trailing integer; else `track_number` if set; else `0`.
    - Tertiary: `track_id` as a stable tiebreaker.
 3. Assign `effective_track_number = 1, 2, 3, …` in that order.
+
+The position-first rule matters when an album has mixed metadata (e.g. B1 has both `track_number=5` and `position="B1"` but B2 has only `position="B2"`). Position is *side-local* and monotonic within a side; `track_number` is *album-wide*. Mixing the two in the secondary sort would put B2 (parsed=2) before B1 (album-wide=5). Preferring position whenever it exists keeps the ordering consistent within each side. `track_number` is only consulted for tracks where `position` is missing — typically bonus / no-side entries that already sort last via the primary key anyway.
 
 `effective_track_number` is the *album-wide* sequence used by `_is_expected_next` and `_is_sequential_track`. The "last track of its side" check uses the `sides` map. Tracks with `side=None` (e.g. the Outtake bonus) are ordered last and treated as their own side bucket — the side-flip logic naturally skips them.
 
@@ -134,6 +145,8 @@ class AlbumTrackEntry:
 
 The matcher's `hint_track_id: int | None` parameter is replaced with `hint_track_ids: Iterable[int] | None`. The injection logic stays the same per track: any hinted track that received votes but fell below `CONFIG.min_count` is re-introduced into the candidate list with its accumulated score.
 
+**Hints must also survive `CONFIG.max_results` truncation.** Today `match_hashes` sorts all qualifying tracks by score and slices `[:max_results]` before returning. A hinted track that just barely cleared `min_count` (or was re-injected below it) can still be cut here if many off-album tracks happen to outscore it. The fix: take the top `max_results` *plus* the union of any hinted tracks that have votes but didn't make the top slice. The final result list size is `max_results + |dropped_hints|`, bounded by `max_results + |hint_track_ids|` — both small constants, so the overhead is negligible. The caller (the listen handler) sees the hinted candidates either ranked at the top by their natural score or appended at the bottom — `apply_boosts` then re-ranks them appropriately.
+
 The listen handler builds the hint set:
 
 ```python
@@ -146,7 +159,7 @@ hints.update(now_playing.expected_next_track_ids())
 
 `expected_next_track_ids()` is a new public method on `NowPlayingService` that returns the candidate track IDs the expected-next predicate (§3) would boost — the single sequential-next track in the default case, or the set of unplayed other-side tracks in the side-flip case. Empty set when no lock is held or no reference track exists.
 
-This is the critical fix the previous draft missed: **the boost layer can only re-rank candidates the matcher surfaces**, so the expected-next tracks must be exempted from the `min_count` cut. Hinting is bounded (current + a small number of expected-next tracks per album), so the cost is negligible.
+This is the critical fix the previous draft missed: **the boost layer can only re-rank candidates the matcher surfaces**, so the expected-next tracks must be exempted from both the `min_count` cut *and* the `max_results` truncation. Hinting is bounded (current + a small number of expected-next tracks per album), so the cost is negligible.
 
 ### 5. Lock release
 
@@ -171,7 +184,7 @@ All existing logic stays:
 - `GRACE_MISSES=6`, idle timeouts (10 s listening, 120 s playing).
 - Maintain path early-return when current track is in candidates at score ≥ 4.
 
-The boost layer changes only the scores `feed()` sees. The silence gates change only whether `feed()` is called with empty candidates. The lock state is read by `apply_boosts()` and the cross-album check; it is written only in `_promote()` and the cleanup paths.
+The boost layer changes only the scores `feed()` sees. The silence gates change whether candidates are produced at all and which streak method the handler calls; `feed()` itself stays silence-agnostic. The lock state is read by `apply_boosts()` and the cross-album check; it is written only in `_promote()` and the cleanup paths.
 
 ### 7. Lock and session cleanup
 
@@ -183,7 +196,31 @@ Lock + session state is cleared whenever it would otherwise become stale:
 - **Discogs metadata applied** to an album: invalidate that album's layout cache via `clear_album_cache(album_id)`; do not clear the lock.
 - **Album / track edits** (`PUT`): invalidate the cache for the affected album; do not clear the lock.
 
-### 8. Tunable constants
+### 8. DB dependency injection
+
+`NowPlayingService` needs to read per-album track lists for the layout cache. It must **not** import `main.get_db` — that creates a circular dependency and couples the service to the FastAPI app's lifecycle.
+
+Instead, the service receives a callable at construction:
+
+```python
+NowPlayingService(
+    ...,
+    get_tracks_for_album: Callable[[int], list[dict]],
+)
+```
+
+`server/app/main.py` (or wherever `NowPlayingService` is instantiated today) wires this in after the DB is initialized:
+
+```python
+now_playing = NowPlayingService(
+    ...,
+    get_tracks_for_album=lambda album_id: get_db().get_tracks_for_album(album_id),
+)
+```
+
+A new `Database.get_tracks_for_album(album_id) -> list[dict]` method is added if not already present (today's `get_tracks()` returns all tracks; add a per-album filter). This keeps `state.py` testable in isolation — tests pass a fake callable returning a fixed track list.
+
+### 9. Tunable constants
 
 In `server/app/state.py`, alongside existing constants:
 
@@ -200,15 +237,15 @@ These are starting values. The listen log shows raw score, boost factor, and sil
 
 ## Code touch points
 
-- **`server/app/main.py`** — RMS gate + hash-density gate + `apply_boosts` call in the listen handler; build the hint set from `current_track_id()` + `expected_next_track_ids()` and pass to `match_hashes`. Update the `Listen:` log line to include raw score and boost factor. Wire `clear_album_cache` / `on_album_deleted` / `on_track_deleted` into the album/track CRUD endpoints and the Discogs metadata application path.
-- **`server/app/state.py`** — add `_locked_album_id`, `_silence_streak`, `_session_played`, `_album_layout_cache`; add methods `note_silence()`, `apply_boosts()`, `expected_next_track_ids()`, `clear_album_cache()`, `on_album_deleted()`, `on_track_deleted()`, `_is_expected_next()`, `_album_layout()`; update `_promote()` to set lock and update `_session_played`; update `_evaluate_stability()` for cross-album release; update `_is_sequential_track()` to use `effective_track_number`; update `_idle_countdown` to clear lock state; reset silence streak in `feed()` when candidates are non-empty.
-- **`server/app/matcher.py`** — change `hint_track_id: int | None` to `hint_track_ids: Iterable[int] | None`; iterate the hint set when re-injecting below-threshold tracks. Logging updated to show the hint set.
-- **`server/app/lastfm.py`** — *no changes.* Last.fm remains a pure subscriber; remove any planned `mark_played` coupling.
+- **`server/app/main.py`** — RMS gate + hash-density gate + `apply_boosts` call in the listen handler. The handler calls `note_silence()` or `note_signal()` for every chunk per the table in §1. Build the hint set from `current_track_id()` + `expected_next_track_ids()` and pass to `match_hashes`. Update the `Listen:` log line to include raw score and boost factor. Wire `clear_album_cache` / `on_album_deleted` / `on_track_deleted` into the album/track CRUD endpoints and the Discogs metadata application path. Construct `NowPlayingService` with the `get_tracks_for_album` callable (§8).
+- **`server/app/state.py`** — add `_locked_album_id`, `_silence_streak`, `_session_played`, `_album_layout_cache`; constructor takes `get_tracks_for_album` callable; add methods `note_silence()`, `note_signal()`, `apply_boosts()`, `expected_next_track_ids()`, `clear_album_cache()`, `on_album_deleted()`, `on_track_deleted()`, `_is_expected_next()`, `_album_layout()`; update `_promote()` to set lock and update `_session_played`; update `_evaluate_stability()` for cross-album release; update `_is_sequential_track()` to use `effective_track_number`; update `_idle_countdown` to clear lock state.
+- **`server/app/matcher.py`** — change `hint_track_id: int | None` to `hint_track_ids: Iterable[int] | None`; iterate the hint set when re-injecting below-`min_count` tracks; after slicing `[:max_results]`, append any hinted tracks that were dropped (with their accumulated votes). Logging updated to show the hint set.
+- **`server/app/db.py`** — add `get_tracks_for_album(album_id) -> list[dict]` if not already present.
+- **`server/app/lastfm.py`** — *no changes.* Last.fm remains a pure subscriber.
 
 No changes to:
 
 - `server/app/fingerprint.py` (RMS computation lives in `main.py` — it operates on decoded PCM, which is part of the listen-handler concern)
-- `server/app/db.py`
 - `server/app/models.py` (raw score and boost ride in a sidecar dataclass, not on the model)
 - `server/app/roon.py`
 - Android client
@@ -219,7 +256,9 @@ No changes to:
 
 New cases in `server/tests/test_state.py`:
 
-- `test_silence_increments_streak` — `note_silence()` then `feed([])` increments `_silence_streak`; a non-silent feed resets it.
+- `test_note_silence_increments_streak` — `note_silence()` increments `_silence_streak`; `feed()` is silence-agnostic.
+- `test_note_signal_resets_streak` — after several `note_silence()` calls, `note_signal()` resets `_silence_streak` to 0.
+- `test_note_signal_resets_streak_with_empty_candidates` — explicitly covers the "audio passed gates, matcher found nothing" case: `note_signal()` + `feed([])` resets the streak (the bug this test guards against: unmatched music inheriting a silence streak).
 - `test_lock_set_on_first_promote` — first promotion sets `_locked_album_id` and records the track in `_session_played`.
 - `test_lock_change_resets_session_played` — promote a track from album X, then promote a track from album Y → `_session_played == {Y_track_id}`.
 - `test_apply_boosts_off_album_unchanged` — no lock → all returned scores equal their raw values.
@@ -230,6 +269,7 @@ New cases in `server/tests/test_state.py`:
 - `test_apply_boosts_side_flip_excludes_already_played` — already-played side-A tracks get only ×1.5, not ×2.5.
 - `test_apply_boosts_score_is_int` — boosted score with `raw=3, boost=2.5` returns `8` (ceil), never `7.5`.
 - `test_effective_track_number_falls_back_to_position` — album where some tracks have `track_number=None` but `position` set → all tracks get sequential `effective_track_number` covering the full album.
+- `test_effective_track_number_mixed_metadata_orders_by_position` — the bug guarded against in §3a: `B1` has `track_number=5, position="B1"`, `B2` has `track_number=None, position="B2"`. Effective ordering on side B is `B1, B2`, not `B2, B1`.
 - `test_sequential_promote_works_with_missing_track_number` — the exact Dona Olimpia regression: ref track has `track_number=None` but `position="B1"`, candidate has `track_number=None` but `position="B2"` → `_is_sequential_track` returns True and promote fires on first frame.
 - `test_expected_next_track_ids_default` — returns the single sequential next track id.
 - `test_expected_next_track_ids_side_flip` — returns all unplayed other-side track ids when silence streak ≥ flip threshold.
@@ -243,6 +283,7 @@ New cases in `server/tests/test_state.py`:
 New cases in `server/tests/test_matcher.py`:
 
 - `test_hint_track_ids_injects_each_below_threshold_track` — multiple hinted tracks each below `min_count` are all surfaced in the result list with their accumulated scores.
+- `test_hint_track_ids_survive_max_results_truncation` — top `max_results` slots filled by off-album candidates; a hinted track with votes below their floor still appears in the final result list.
 - `test_hint_track_ids_none_behaves_like_old_hint_track_id_none` — back-compat for the no-hint case.
 
 New cases in `server/tests/test_api.py` (or wherever the listen handler is currently tested):
