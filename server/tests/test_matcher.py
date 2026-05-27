@@ -66,3 +66,35 @@ def test_hint_track_ids_injects_each_below_threshold_track(tmp_path):
         assert {t1, t2, t3}.issubset(returned_ids), with_hints
     finally:
         db.close()
+
+
+def test_hint_track_ids_survive_max_results_truncation(tmp_path):
+    """A hinted track that didn't make the top max_results slice is still returned."""
+    from app.matcher import match_hashes
+    from app.db import Database
+    from app.config import CONFIG
+
+    db = Database(str(tmp_path / "fp.db"))
+    try:
+        album_id, _ = db.insert_album(artist="A", name="Al", year=2020)
+        # Create CONFIG.max_results + 1 tracks. Give the first max_results
+        # strong hashes so they fill the top slice; the last track gets a
+        # single hash (below min_count) and is the one we hint.
+        strong_tracks: list[int] = []
+        for i in range(CONFIG.max_results):
+            tid = db.insert_track(album_id, "A", "Al", f"S{i}", track_number=i)
+            strong_tracks.append(tid)
+            hashes = [(2000 + f, tid, f) for f in range(CONFIG.min_count + 2)]
+            db.insert_hashes(hashes)
+        sparse_tid = db.insert_track(album_id, "A", "Al", "Sparse", track_number=CONFIG.max_results)
+        db.insert_hashes([(9999, sparse_tid, 0)])
+
+        query = [(2000 + f, f) for f in range(CONFIG.min_count + 2)] + [(9999, 0)]
+
+        results = match_hashes(query, db, stoplist=None, hint_track_ids=[sparse_tid])
+        returned_ids = [r["track_id"] for r in results]
+        assert sparse_tid in returned_ids, returned_ids
+        # The strong tracks should still be present (the hint appends, doesn't replace).
+        assert len([t for t in strong_tracks if t in returned_ids]) >= 1
+    finally:
+        db.close()

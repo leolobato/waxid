@@ -172,10 +172,16 @@ def match_hashes(
 
     sorted_tracks = sorted(track_best.items(), key=lambda x: x[1][0], reverse=True)
 
+    top_slice = sorted_tracks[:CONFIG.max_results]
+    top_ids = {tid for tid, _ in top_slice}
+    surviving_hints = [
+        (tid, entry) for tid, entry in sorted_tracks[CONFIG.max_results:]
+        if tid in hint_entries and tid not in top_ids
+    ]
+    final_tracks = top_slice + surviving_hints
+
     results = []
-    for i, (track_id, (score, offset_frames)) in enumerate(
-        sorted_tracks[:CONFIG.max_results]
-    ):
+    for i, (track_id, (score, offset_frames)) in enumerate(final_tracks):
         confidence = None
         if i == 0 and len(sorted_tracks) > 1:
             second_score = sorted_tracks[1][1][0]
