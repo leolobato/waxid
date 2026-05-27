@@ -425,3 +425,37 @@ class TestSettingsAPI:
     def test_put_settings_validates(self, client):
         r = client.put("/settings", json={"roon_enabled": "not_bool"})
         assert r.status_code == 422
+
+
+def test_listen_silent_audio_skips_fingerprint(client, monkeypatch):
+    """A near-silent WAV must skip fingerprinting and increment the silence streak."""
+    import wave
+    import io
+    import numpy as np
+    from app import main as app_main
+
+    # Build a 3-second 11025 Hz mono int16 WAV of near silence (RMS ~ -80 dBFS).
+    sr = 11025
+    samples = (np.random.randn(sr * 3) * 4).astype(np.int16)  # tiny noise
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+
+    calls = {"fingerprint": 0}
+    orig_fp = app_main.fingerprint_audio
+    def spy_fp(*a, **kw):
+        calls["fingerprint"] += 1
+        return orig_fp(*a, **kw)
+    monkeypatch.setattr(app_main, "fingerprint_audio", spy_fp)
+
+    streak_before = app_main.now_playing._silence_streak
+    resp = client.post("/listen", content=buf.getvalue(),
+                       headers={"Content-Type": "audio/wav"})
+    assert resp.status_code == 202
+    # Give the background task a moment to run.
+    import time as _t; _t.sleep(0.2)
+    assert calls["fingerprint"] == 0
+    assert app_main.now_playing._silence_streak > streak_before
