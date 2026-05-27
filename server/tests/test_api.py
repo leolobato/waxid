@@ -459,3 +459,33 @@ def test_listen_silent_audio_skips_fingerprint(client, monkeypatch):
     import time as _t; _t.sleep(0.2)
     assert calls["fingerprint"] == 0
     assert app_main.now_playing._silence_streak > streak_before
+
+
+def test_listen_low_hash_density_discards_candidates(client, monkeypatch):
+    """If fingerprint_audio returns very few hashes, the matcher is not called."""
+    import wave, io, numpy as np
+    from app import main as app_main
+
+    sr = 11025
+    samples = (np.random.randn(sr * 3) * 5000).astype(np.int16)  # loud enough
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+
+    # Force the fingerprinter to return very few hashes.
+    monkeypatch.setattr(app_main, "fingerprint_audio", lambda *_a, **_kw: [(1, 0), (2, 1)])
+    matcher_calls = {"n": 0}
+    orig_match = app_main.match_hashes
+    def spy_match(*a, **kw):
+        matcher_calls["n"] += 1
+        return orig_match(*a, **kw)
+    monkeypatch.setattr(app_main, "match_hashes", spy_match)
+
+    streak_before = app_main.now_playing._silence_streak
+    resp = client.post("/listen", content=buf.getvalue(),
+                       headers={"Content-Type": "audio/wav"})
+    assert resp.status_code == 202
+    import time as _t; _t.sleep(0.2)
+    assert matcher_calls["n"] == 0
+    assert app_main.now_playing._silence_streak > streak_before
