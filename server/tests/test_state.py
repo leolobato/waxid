@@ -741,3 +741,41 @@ class TestDeletionHooks:
             assert svc._session_played == {2}
         finally:
             svc.shutdown()
+
+
+class TestDonaOlimpiaRegression:
+    """Recreates the failure documented in the spec: a sparse next-track
+    on a locked album promoting on its very first frame at raw score 5."""
+
+    @pytest.mark.asyncio
+    async def test_sparse_expected_next_promotes_on_first_frame(self):
+        tracks = [
+            {"track_id": 5, "album_id": 126, "side": "B", "position": "B1", "track_number": 5},  # Jazz Carnival
+            {"track_id": 6, "album_id": 126, "side": "B", "position": "B2", "track_number": 6},  # Dona Olimpia
+        ]
+        svc = NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
+        try:
+            # Establish the lock with Jazz Carnival, then drop to listening
+            # so the next promote must use the sequential-with-boost path.
+            jazz = make_candidate(track_id=5, album_id=126, track_number=5,
+                                  side="B", position="B1", score=20)
+            await svc.feed([jazz])
+            await svc.feed([jazz])
+            assert svc._locked_album_id == 126
+            svc._status = "listening"
+            svc._last_played = jazz
+            svc._current = None
+            svc._buffer.clear()
+            svc._pending_candidates.clear()
+
+            # Mimic the listen handler: build raw candidates, apply boosts, feed.
+            dona_raw = make_candidate(track_id=6, album_id=126, track_number=6,
+                                      side="B", position="B2", score=5)
+            boosted, _ = svc.apply_boosts([dona_raw])
+            # ceil(5 * 2.5) = 13 which is >= MIN_PROMOTE_SCORE
+            assert boosted[0].score == 13
+            await svc.feed(boosted)
+            assert svc.get_state().status == "playing"
+            assert svc.get_state().track_id == 6
+        finally:
+            svc.shutdown()
