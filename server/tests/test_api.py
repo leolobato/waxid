@@ -489,3 +489,50 @@ def test_listen_low_hash_density_discards_candidates(client, monkeypatch):
     import time as _t; _t.sleep(0.2)
     assert matcher_calls["n"] == 0
     assert app_main.now_playing._silence_streak > streak_before
+
+
+def test_listen_passes_expected_next_hints_to_matcher(client, monkeypatch):
+    """When a track is playing on a locked album, the matcher receives both
+    the current track id and the expected-next track id as hints."""
+    import wave, io, numpy as np
+    from app import main as app_main
+    from app.models import MatchCandidate
+
+    sr = 11025
+    samples = (np.random.randn(sr * 3) * 5000).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+
+    # Swap in a fake album-tracks source so we don't depend on the test DB.
+    fake_tracks = [
+        {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+        {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+    ]
+    svc = app_main.now_playing
+    svc.clear_album_cache(None)
+    svc._get_tracks_for_album = lambda _aid: fake_tracks
+
+    svc._locked_album_id = 10
+    svc._current = MatchCandidate(
+        track_id=1, artist="A", album="Al", album_id=10, track="T1",
+        track_number=1, year=2020, side="A", position="A1", score=20,
+        confidence=2.0, offset_s=0.0, duration_s=180.0,
+        discogs_url=None, cover_url=None,
+    )
+    svc._status = "playing"
+
+    monkeypatch.setattr(app_main, "fingerprint_audio", lambda *_a, **_kw: [(1, 0)] * 1000)
+
+    captured: dict = {}
+    def spy_match(query, db, stoplist, hint_track_ids):
+        captured["hint_track_ids"] = set(hint_track_ids or [])
+        return []
+    monkeypatch.setattr(app_main, "match_hashes", spy_match)
+
+    resp = client.post("/listen", content=buf.getvalue(),
+                       headers={"Content-Type": "audio/wav"})
+    assert resp.status_code == 202
+    import time as _t; _t.sleep(0.2)
+    assert {1, 2}.issubset(captured.get("hint_track_ids", set())), captured
