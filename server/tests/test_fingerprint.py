@@ -94,3 +94,56 @@ def test_fingerprint_audio_end_to_end():
         assert 0 <= h < (1 << 22)
         assert isinstance(t_frame, int)
         assert t_frame >= 0
+
+
+def test_compute_rms_dbfs_int16_silent():
+    import wave, io, math, numpy as np
+    from app.fingerprint import compute_rms_dbfs
+    sr = 11025
+    samples = np.zeros(sr, dtype=np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+    assert compute_rms_dbfs(buf.getvalue()) == -math.inf
+
+
+def test_compute_rms_dbfs_int16_full_scale():
+    import wave, io, numpy as np
+    from app.fingerprint import compute_rms_dbfs
+    sr = 11025
+    samples = np.full(sr, 32767, dtype=np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+    assert compute_rms_dbfs(buf.getvalue()) >= -0.01  # ~0 dBFS
+
+
+def test_compute_rms_dbfs_uint8_silent_is_centered_at_128():
+    """8-bit WAV is unsigned 0..255; a flat 128 stream is digital silence,
+    not full-scale. Older treatment as signed int8 would have called this loud."""
+    import wave, io, math, numpy as np
+    from app.fingerprint import compute_rms_dbfs
+    sr = 11025
+    samples = np.full(sr, 128, dtype=np.uint8)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(1); w.setframerate(sr)
+        w.writeframes(samples.tobytes())
+    assert compute_rms_dbfs(buf.getvalue()) == -math.inf
+
+
+def test_compute_rms_dbfs_rejects_unsupported_width():
+    import wave, io, pytest, numpy as np
+    from app.fingerprint import compute_rms_dbfs
+    sr = 11025
+    samples = np.zeros(sr, dtype=np.int32)
+    buf = io.BytesIO()
+    # 24-bit WAV: write raw frames with sampwidth=3.
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(3); w.setframerate(sr)
+        # 3 bytes per sample, all zero.
+        w.writeframes(b"\x00\x00\x00" * sr)
+    with pytest.raises(ValueError):
+        compute_rms_dbfs(buf.getvalue())
