@@ -674,19 +674,28 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         cur = now_playing.current_track_id()
         if cur is not None:
             hint_track_ids.add(cur)
-        # expected_next_track_ids() arrives in Task C3; until then the only
-        # hint is the currently-playing track, identical to today's behaviour.
-        results = await asyncio.to_thread(match_hashes, query_hashes, get_db(), _stoplist, hint_track_ids)
+        hint_track_ids.update(now_playing.expected_next_track_ids())
+        raw_results = await asyncio.to_thread(
+            match_hashes, query_hashes, get_db(), _stoplist, hint_track_ids
+        )
+        raw_candidates = [MatchCandidate(**r) for r in raw_results]
+        candidates, boost_infos = now_playing.apply_boosts(raw_candidates)
+        now_playing.note_signal()
         elapsed_ms = (time.time() - start) * 1000
-        candidates = [MatchCandidate(**r) for r in results]
         if candidates:
             top = candidates[0]
-            logger.info("Listen: %s - %s (score:%s, conf:%s, %.0fms)", top.artist, top.track, top.score, top.confidence, elapsed_ms)
+            top_info = boost_infos[0]
+            logger.info(
+                "Listen: %s - %s (score:%s raw:%s boost:x%.2f, conf:%s, %.0fms)",
+                top.artist, top.track, top.score, top_info.raw_score,
+                top_info.boost, top.confidence, elapsed_ms,
+            )
         else:
             logger.info("Listen: no match (%.0fms)", elapsed_ms)
         await now_playing.feed(candidates, recorded_at=recorded_at)
         state = now_playing.get_state()
-        logger.debug("Listen: status=%s%s", state.status, f", track_id={state.track_id}" if state.track_id else "")
+        logger.debug("Listen: status=%s%s", state.status,
+                     f", track_id={state.track_id}" if state.track_id else "")
     except Exception:
         logger.exception("Listen error")
 
