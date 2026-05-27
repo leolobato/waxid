@@ -124,7 +124,9 @@ async def _build_stoplist_background() -> None:
 
 app = FastAPI(title="WaxID Server", lifespan=lifespan)
 
-now_playing = NowPlayingService()
+now_playing = NowPlayingService(
+    get_tracks_for_album=lambda album_id: get_db().get_tracks_for_album(album_id),
+)
 _pending_audio: bytes | None = None
 _processing = False
 
