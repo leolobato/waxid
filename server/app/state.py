@@ -15,7 +15,8 @@ REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
 IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
-SILENCE_FRAMES_FOR_RELEASE = 20
+MIN_EVIDENCE_SCORE = 6           # context-album raw score that counts as evidence
+NO_EVIDENCE_FRAMES_FOR_RELEASE = 15   # ~45s at one frame per ~3s
 SILENCE_RMS_DBFS = -40.0
 HASH_MIN_COUNT = 150
 
@@ -72,7 +73,7 @@ class NowPlayingService:
         self._last_feed_time: float | None = None
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
-        self._silence_streak: int = 0
+        self._no_evidence_streak: int = 0
         self._locked_album_id: int | None = None
         self._session_played: set[int] = set()
 
@@ -92,7 +93,7 @@ class NowPlayingService:
     async def feed(self, candidates: list[MatchCandidate], recorded_at: float | None = None) -> None:
         self._last_feed_time = time.time()
         self._restart_idle_timer()
-        self._check_silence_release()
+        self._update_evidence(candidates)
 
         old_status = self._status
         old_track_id = self._current.track_id if self._current else None
@@ -160,15 +161,25 @@ class NowPlayingService:
             return self._current.track_id
         return None
 
-    def note_silence(self) -> None:
-        """Called by the listen handler when a chunk was deemed silent
-        (RMS gate or hash-density gate). feed() stays silence-agnostic."""
-        self._silence_streak += 1
-
-    def note_signal(self) -> None:
-        """Called by the listen handler when a chunk passed both silence gates,
-        regardless of whether the matcher returned candidates."""
-        self._silence_streak = 0
+    def _update_evidence(self, candidates: list[MatchCandidate]) -> None:
+        """Count frames with no credible sign of the context album; expire
+        the context after NO_EVIDENCE_FRAMES_FOR_RELEASE. Hint-injected
+        junk below MIN_EVIDENCE_SCORE does not count as evidence."""
+        ref = self._current or self._last_played
+        if ref is None:
+            self._no_evidence_streak = 0
+            return
+        if any(c.album_id == ref.album_id and c.score >= MIN_EVIDENCE_SCORE
+               for c in candidates):
+            self._no_evidence_streak = 0
+            return
+        self._no_evidence_streak += 1
+        if (
+            self._no_evidence_streak >= NO_EVIDENCE_FRAMES_FOR_RELEASE
+            and self._current is None
+        ):
+            self._last_played = None
+            self._no_evidence_streak = 0
 
     def _album_layout(self, album_id: int) -> AlbumLayout:
         cached = self._album_layout_cache.get(album_id)
@@ -398,15 +409,8 @@ class NowPlayingService:
         self._anchor_offset = offset
         self._status = "playing"
         self._miss_count = 0
+        self._no_evidence_streak = 0
         self._buffer.clear()
-
-    def _check_silence_release(self) -> None:
-        if self._locked_album_id is None:
-            return
-        if self._silence_streak >= SILENCE_FRAMES_FOR_RELEASE:
-            self._locked_album_id = None
-            self._session_played = set()
-            self._last_played = None
 
     def _check_track_ended(self) -> None:
         if self._status != "playing" or self._current is None:
@@ -448,7 +452,7 @@ class NowPlayingService:
             self._buffer.clear()
             self._locked_album_id = None
             self._session_played = set()
-            self._silence_streak = 0
+            self._no_evidence_streak = 0
             if old_status != "idle":
                 await self._notify()
         except asyncio.CancelledError:
