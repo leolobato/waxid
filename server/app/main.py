@@ -681,17 +681,14 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         raw_results = await asyncio.to_thread(
             match_hashes, query_hashes, get_db(), _stoplist, hint_track_ids
         )
-        raw_candidates = [MatchCandidate(**r) for r in raw_results]
-        candidates, boost_infos = now_playing.apply_boosts(raw_candidates)
+        candidates = [MatchCandidate(**r) for r in raw_results]
         now_playing.note_signal()
         elapsed_ms = (time.time() - start) * 1000
         if candidates:
             top = candidates[0]
-            top_info = boost_infos[0]
             logger.info(
-                "Listen: %s - %s (score:%s raw:%s boost:x%.2f, conf:%s, %.0fms)",
-                top.artist, top.track, top.score, top_info.raw_score,
-                top_info.boost, top.confidence, elapsed_ms,
+                "Listen: %s - %s (score:%s, conf:%s, %.0fms)",
+                top.artist, top.track, top.score, top.confidence, elapsed_ms,
             )
         else:
             logger.info("Listen: no match (%.0fms)", elapsed_ms)
