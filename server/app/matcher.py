@@ -173,10 +173,8 @@ def match_hashes(
     sorted_tracks = sorted(track_best.items(), key=lambda x: x[1][0], reverse=True)
     # v2: no top-N truncation — the state machine counts every credible
     # candidate per frame, and hinted tracks ride along at their raw votes.
-    final_tracks = sorted_tracks
-
     results = []
-    for i, (track_id, (score, offset_frames)) in enumerate(final_tracks):
+    for i, (track_id, (score, offset_frames)) in enumerate(sorted_tracks):
         confidence = None
         if i == 0 and len(sorted_tracks) > 1:
             second_score = sorted_tracks[1][1][0]
