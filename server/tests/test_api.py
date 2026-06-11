@@ -428,11 +428,12 @@ class TestSettingsAPI:
 
 
 def test_listen_silent_audio_skips_fingerprint(client, monkeypatch):
-    """A near-silent WAV must skip fingerprinting and increment the silence streak."""
+    """A near-silent WAV must skip fingerprinting and increment the no-evidence streak."""
     import wave
     import io
     import numpy as np
     from app import main as app_main
+    from app.models import MatchCandidate
 
     # Build a 3-second 11025 Hz mono int16 WAV of near silence (RMS ~ -80 dBFS).
     sr = 11025
@@ -451,20 +452,30 @@ def test_listen_silent_audio_skips_fingerprint(client, monkeypatch):
         return orig_fp(*a, **kw)
     monkeypatch.setattr(app_main, "fingerprint_audio", spy_fp)
 
-    streak_before = app_main.now_playing._silence_streak
+    svc = app_main.now_playing
+    svc._current = None
+    svc._status = "listening"
+    svc._last_played = MatchCandidate(
+        track_id=1, artist="A", album="Al", album_id=10, track="T1",
+        track_number=1, year=2020, side="A", position="A1", score=20,
+        confidence=2.0, offset_s=0.0, duration_s=180.0,
+        discogs_url=None, cover_url=None,
+    )
+    streak_before = svc._no_evidence_streak
     resp = client.post("/listen", content=buf.getvalue(),
                        headers={"Content-Type": "audio/wav"})
     assert resp.status_code == 202
     # Give the background task a moment to run.
     import time as _t; _t.sleep(0.2)
     assert calls["fingerprint"] == 0
-    assert app_main.now_playing._silence_streak > streak_before
+    assert app_main.now_playing._no_evidence_streak > streak_before
 
 
 def test_listen_low_hash_density_discards_candidates(client, monkeypatch):
     """If fingerprint_audio returns very few hashes, the matcher is not called."""
     import wave, io, numpy as np
     from app import main as app_main
+    from app.models import MatchCandidate
 
     sr = 11025
     samples = (np.random.randn(sr * 3) * 5000).astype(np.int16)  # loud enough
@@ -482,13 +493,22 @@ def test_listen_low_hash_density_discards_candidates(client, monkeypatch):
         return orig_match(*a, **kw)
     monkeypatch.setattr(app_main, "match_hashes", spy_match)
 
-    streak_before = app_main.now_playing._silence_streak
+    svc = app_main.now_playing
+    svc._current = None
+    svc._status = "listening"
+    svc._last_played = MatchCandidate(
+        track_id=1, artist="A", album="Al", album_id=10, track="T1",
+        track_number=1, year=2020, side="A", position="A1", score=20,
+        confidence=2.0, offset_s=0.0, duration_s=180.0,
+        discogs_url=None, cover_url=None,
+    )
+    streak_before = svc._no_evidence_streak
     resp = client.post("/listen", content=buf.getvalue(),
                        headers={"Content-Type": "audio/wav"})
     assert resp.status_code == 202
     import time as _t; _t.sleep(0.2)
     assert matcher_calls["n"] == 0
-    assert app_main.now_playing._silence_streak > streak_before
+    assert app_main.now_playing._no_evidence_streak > streak_before
 
 
 def test_listen_passes_expected_next_hints_to_matcher(client, monkeypatch):

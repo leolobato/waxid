@@ -662,13 +662,11 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         start = time.time()
         rms_dbfs = await asyncio.to_thread(compute_rms_dbfs, audio_bytes)
         if rms_dbfs < SILENCE_RMS_DBFS:
-            now_playing.note_silence()
             await now_playing.feed([], recorded_at=recorded_at)
             logger.info("Listen: silence (rms=%.1f dBFS)", rms_dbfs)
             return
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
         if len(query_hashes) < HASH_MIN_COUNT:
-            now_playing.note_silence()
             await now_playing.feed([], recorded_at=recorded_at)
             logger.info("Listen: low hash density (hashes=%d)", len(query_hashes))
             return
@@ -682,7 +680,6 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
             match_hashes, query_hashes, get_db(), _stoplist, hint_track_ids
         )
         candidates = [MatchCandidate(**r) for r in raw_results]
-        now_playing.note_signal()
         elapsed_ms = (time.time() - start) * 1000
         if candidates:
             top = candidates[0]

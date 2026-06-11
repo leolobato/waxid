@@ -384,28 +384,6 @@ class TestAlbumLayout:
             svc.shutdown()
 
 
-class TestSilenceStreak:
-    def test_note_silence_increments_streak(self, service):
-        assert service._silence_streak == 0
-        service.note_silence()
-        service.note_silence()
-        assert service._silence_streak == 2
-
-    def test_note_signal_resets_streak(self, service):
-        service.note_silence()
-        service.note_silence()
-        service.note_signal()
-        assert service._silence_streak == 0
-
-    @pytest.mark.asyncio
-    async def test_feed_is_silence_agnostic(self, service):
-        """feed() does not touch _silence_streak — that's the handler's job."""
-        service.note_silence()
-        service.note_silence()
-        await service.feed([])
-        assert service._silence_streak == 2
-
-
 class TestAlbumLock:
     @pytest.mark.asyncio
     async def test_lock_set_on_first_promote(self, service):
@@ -508,19 +486,6 @@ class TestCrossAlbumRelease:
 
 class TestLockRelease:
     @pytest.mark.asyncio
-    async def test_lock_released_after_sustained_silence(self, service):
-        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
-        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
-        assert service._locked_album_id == 10
-        # Silence streak reaches the release threshold.
-        for _ in range(20):
-            service.note_silence()
-        await service.feed([])
-        assert service._locked_album_id is None
-        assert service._session_played == set()
-        assert service._last_played is None
-
-    @pytest.mark.asyncio
     async def test_idle_countdown_clears_lock(self, service):
         await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
         await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
@@ -530,7 +495,62 @@ class TestLockRelease:
         await service._idle_countdown(0.01)
         assert service._locked_album_id is None
         assert service._session_played == set()
-        assert service._silence_streak == 0
+        assert service._no_evidence_streak == 0
+
+
+def _drop_to_listening(svc, last_candidate):
+    """Force the between-tracks state: context = last_played."""
+    svc._status = "listening"
+    svc._last_played = last_candidate
+    svc._current = None
+    svc._buffer.clear()
+
+
+class TestNoEvidenceExpiry:
+    @pytest.mark.asyncio
+    async def test_hinted_junk_below_min_count_does_not_reset_streak(self, service):
+        """Hint-injected candidates can appear on 1-3 junk votes; they must
+        not keep a stale context alive (adversarial-review finding #1)."""
+        played = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([played])
+        await service.feed([played])
+        _drop_to_listening(service, played)
+        junk = make_candidate(track_id=2, album_id=10, score=3)
+        for _ in range(14):
+            await service.feed([junk])
+        assert service._last_played is not None
+        await service.feed([junk])  # 15th consecutive no-evidence frame
+        assert service._last_played is None
+
+    @pytest.mark.asyncio
+    async def test_on_album_evidence_resets_streak(self, service):
+        played = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([played])
+        await service.feed([played])
+        _drop_to_listening(service, played)
+        for _ in range(10):
+            await service.feed([])
+        assert service._no_evidence_streak == 10
+        real = make_candidate(track_id=3, album_id=10, score=6)
+        await service.feed([real])
+        assert service._no_evidence_streak == 0
+        assert service._last_played is not None
+
+    @pytest.mark.asyncio
+    async def test_silent_frames_count_toward_expiry(self, service):
+        played = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([played])
+        await service.feed([played])
+        _drop_to_listening(service, played)
+        for _ in range(15):
+            await service.feed([])
+        assert service._last_played is None
+
+    @pytest.mark.asyncio
+    async def test_streak_stays_zero_without_context(self, service):
+        for _ in range(5):
+            await service.feed([])
+        assert service._no_evidence_streak == 0
 
 
 class TestDeletionHooks:
