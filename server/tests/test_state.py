@@ -384,47 +384,20 @@ class TestAlbumLayout:
             svc.shutdown()
 
 
-class TestAlbumLock:
+class TestCrossAlbumTakeover:
     @pytest.mark.asyncio
-    async def test_lock_set_on_first_promote(self, service):
-        cand = make_candidate(track_id=1, album_id=10, score=20)
-        await service.feed([cand])
-        await service.feed([cand])
-        assert service._locked_album_id == 10
-        assert service._session_played == {1}
-
-    @pytest.mark.asyncio
-    async def test_lock_change_resets_session_played(self, service):
-        cand1 = make_candidate(track_id=1, album_id=10, score=20)
-        await service.feed([cand1])
-        await service.feed([cand1])
-        assert service._session_played == {1}
-        # Force a promotion from a different album by clearing the current
-        # state and feeding a strong cross-album candidate.
-        service._current = None
-        service._last_played = None
-        service._buffer.clear()
-        cand99 = make_candidate(track_id=99, album_id=20, score=20)
-        await service.feed([cand99])
-        await service.feed([cand99])
-        assert service._locked_album_id == 20
-        assert service._session_played == {99}
-
-    @pytest.mark.asyncio
-    async def test_same_album_promote_adds_to_session_played(self, service):
-        cand1 = make_candidate(track_id=1, album_id=10, score=20)
-        await service.feed([cand1])
-        await service.feed([cand1])
-        assert service._session_played == {1}
-        # Promote a different track from the same album via a fresh stability run.
-        service._current = None
-        service._last_played = None
-        service._buffer.clear()
-        cand2 = make_candidate(track_id=2, album_id=10, score=20)
-        await service.feed([cand2])
-        await service.feed([cand2])
-        assert service._locked_album_id == 10
-        assert service._session_played == {1, 2}
+    async def test_context_follows_cross_album_promote(self, service):
+        """A record swap: the new album promotes directly via stability and
+        becomes the new context — no explicit release step needed."""
+        old = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([old])
+        await service.feed([old])
+        _drop_to_listening(service, old)
+        new = make_candidate(track_id=99, album_id=20, score=40)
+        await service.feed([new])
+        await service.feed([new])
+        assert service.get_state().track_id == 99
+        assert service.expected_next_track_ids() == set()  # context = album 20 (no layout)
 
 
 class TestExpectedNextTrackIds:
@@ -466,36 +439,17 @@ class TestExpectedNextTrackIds:
             svc.shutdown()
 
 
-class TestCrossAlbumRelease:
+class TestIdleClearsContext:
     @pytest.mark.asyncio
-    async def test_lock_moves_when_off_album_wins_stability(self, service):
-        # Lock on album 10.
+    async def test_idle_countdown_clears_context(self, service):
         await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
         await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
-        assert service._locked_album_id == 10
-        # Drop back to listening so stability buffer starts fresh.
-        service._current = None
-        service._status = "listening"
-        service._buffer.clear()
-        # Two strong frames for an off-album candidate trigger stability promotion.
-        await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
-        await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
-        assert service._locked_album_id == 20
-        assert service._session_played == {99}
-
-
-class TestLockRelease:
-    @pytest.mark.asyncio
-    async def test_idle_countdown_clears_lock(self, service):
-        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
-        await service.feed([make_candidate(track_id=1, album_id=10, score=20)])
-        assert service._locked_album_id == 10
-        # Drive the idle path synchronously with a short timeout.
         service._status = "listening"
         await service._idle_countdown(0.01)
-        assert service._locked_album_id is None
-        assert service._session_played == set()
+        assert service._current is None
+        assert service._last_played is None
         assert service._no_evidence_streak == 0
+        assert service.get_state().status == "idle"
 
 
 def _drop_to_listening(svc, last_candidate):
@@ -607,43 +561,26 @@ class TestDeletionHooks:
     def _layout_svc(self, tracks):
         return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
 
-    def test_on_album_deleted_clears_lock_if_locked(self):
+    def test_on_album_deleted_drops_layout_cache(self):
         svc = self._layout_svc([
             {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
         ])
         try:
-            svc._locked_album_id = 10
-            svc._session_played = {1}
             svc._album_layout(10)
             svc.on_album_deleted(10)
-            assert svc._locked_album_id is None
-            assert svc._session_played == set()
             assert 10 not in svc._album_layout_cache
         finally:
             svc.shutdown()
 
-    def test_on_album_deleted_other_album_leaves_lock(self):
-        svc = self._layout_svc([])
-        try:
-            svc._locked_album_id = 10
-            svc._session_played = {1}
-            svc.on_album_deleted(99)
-            assert svc._locked_album_id == 10
-            assert svc._session_played == {1}
-        finally:
-            svc.shutdown()
-
-    def test_on_track_deleted_invalidates_layout_and_removes_from_session(self):
+    def test_on_track_deleted_invalidates_layout(self):
         svc = self._layout_svc([
             {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
             {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
         ])
         try:
             svc._album_layout(10)
-            svc._session_played = {1, 2}
             svc.on_track_deleted(1, 10)
             assert 10 not in svc._album_layout_cache
-            assert svc._session_played == {2}
         finally:
             svc.shutdown()
 
@@ -654,7 +591,6 @@ class TestDeletionHooks:
             svc._current = cur
             svc._status = "playing"
             svc._last_played = cur
-            svc._locked_album_id = 10
             svc.on_album_deleted(10)
             assert svc._current is None
             assert svc._last_played is None
