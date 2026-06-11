@@ -74,8 +74,6 @@ class NowPlayingService:
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
         self._no_evidence_streak: int = 0
-        self._locked_album_id: int | None = None
-        self._session_played: set[int] = set()
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -231,14 +229,10 @@ class NowPlayingService:
             self._status = "listening"
         if self._last_played is not None and self._last_played.album_id == album_id:
             self._last_played = None
-        if self._locked_album_id == album_id:
-            self._locked_album_id = None
-            self._session_played = set()
         self._no_evidence_streak = 0
 
     def on_track_deleted(self, track_id: int, album_id: int) -> None:
         self.clear_album_cache(album_id)
-        self._session_played.discard(track_id)
         if self._current is not None and self._current.track_id == track_id:
             self._current = None
             self._anchor_time = None
@@ -399,11 +393,6 @@ class NowPlayingService:
         }
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
-        if candidate.album_id != self._locked_album_id:
-            self._locked_album_id = candidate.album_id
-            self._session_played = {candidate.track_id}
-        else:
-            self._session_played.add(candidate.track_id)
         self._current = candidate
         self._anchor_time = time.time()
         offset = candidate.offset_s or 0.0
@@ -456,8 +445,6 @@ class NowPlayingService:
             self._anchor_time = None
             self._anchor_offset = None
             self._buffer.clear()
-            self._locked_album_id = None
-            self._session_played = set()
             self._no_evidence_streak = 0
             if old_status != "idle":
                 await self._notify()
