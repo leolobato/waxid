@@ -730,3 +730,75 @@ class TestChallengerGuard:
         await service.feed([fading, rising])
         await service.feed([fading, rising])
         assert service.get_state().track_id == 2
+
+
+class TestTrackEndBufferClear:
+    @pytest.mark.asyncio
+    async def test_ended_track_does_not_zombie_repromote(self, service):
+        """After a track ends by duration, leftover buffer frames must not
+        re-promote it on the next (even silent) feed."""
+        c = make_candidate(offset_s=170.0, duration_s=180.0)
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            await service.feed([c])
+            await service.feed([c])
+            await service.feed([c])  # buffer holds the track post-promote
+            assert service.get_state().status == "playing"
+            mock_time.time.return_value = 1015.0  # past duration
+            await service.feed([])
+            assert service.get_state().status == "listening"
+
+    @pytest.mark.asyncio
+    async def test_grace_misses_drop_to_listening(self, service):
+        """6 consecutive frames without the current track drop to listening
+        and remember it as last_played."""
+        c = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([c])
+        await service.feed([c])
+        assert service.get_state().status == "playing"
+        for _ in range(6):
+            await service.feed([])
+        assert service.get_state().status == "listening"
+        assert service._last_played is not None
+        assert service._last_played.track_id == 1
+
+
+class TestGuardSeesWeakCurrent:
+    @pytest.mark.asyncio
+    async def test_weakly_maintained_current_still_guarded(self, service):
+        """A current track alive at 4-5 (below the buffer bar) still forces
+        cross-album challengers to clear the x1.5 margin."""
+        cur = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([cur])
+        await service.feed([cur])
+        weak = make_candidate(track_id=1, album_id=1, score=5)   # alive, not buffered
+        rival = make_candidate(track_id=9, album_id=3, score=7)  # 7 < 5 * 1.5
+        await service.feed([weak, rival])
+        await service.feed([weak, rival])
+        assert service.get_state().track_id == 1
+
+    @pytest.mark.asyncio
+    async def test_clear_challenger_still_dethrones_weak_current(self, service):
+        cur = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([cur])
+        await service.feed([cur])
+        weak = make_candidate(track_id=1, album_id=1, score=5)
+        rival = make_candidate(track_id=9, album_id=3, score=8)  # 8 > 5 * 1.5
+        await service.feed([weak, rival])
+        await service.feed([weak, rival])
+        assert service.get_state().track_id == 9
+
+    @pytest.mark.asyncio
+    async def test_same_album_challenger_blocked_by_recent_best(self, service):
+        """The incumbent is judged by its recent BEST, the challenger by its
+        latest score — a fading current track isn't stolen by a mid-score
+        album-mate."""
+        cur20 = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([cur20])
+        await service.feed([cur20])  # promote clears the buffer
+        neighbor = make_candidate(track_id=2, album_id=1, score=10)
+        await service.feed([cur20, neighbor])
+        fading = make_candidate(track_id=1, album_id=1, score=6)
+        await service.feed([fading, neighbor])
+        # neighbor (10) is stable but <= current's recent best (20).
+        assert service.get_state().track_id == 1
