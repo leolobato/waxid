@@ -164,7 +164,9 @@ class NowPlayingService:
     def _update_evidence(self, candidates: list[MatchCandidate]) -> None:
         """Count frames with no credible sign of the context album; expire
         the context after NO_EVIDENCE_FRAMES_FOR_RELEASE. Hint-injected
-        junk below MIN_EVIDENCE_SCORE does not count as evidence."""
+        junk below MIN_EVIDENCE_SCORE does not count as evidence. Expiry is
+        suppressed while a track is playing (_current set); the streak restarts
+        when a track drops (_drop_current) or ends (_end_track)."""
         ref = self._current or self._last_played
         if ref is None:
             self._no_evidence_streak = 0
@@ -232,6 +234,7 @@ class NowPlayingService:
         if self._locked_album_id == album_id:
             self._locked_album_id = None
             self._session_played = set()
+        self._no_evidence_streak = 0
 
     def on_track_deleted(self, track_id: int, album_id: int) -> None:
         self.clear_album_cache(album_id)
@@ -243,6 +246,7 @@ class NowPlayingService:
             self._status = "listening"
         if self._last_played is not None and self._last_played.track_id == track_id:
             self._last_played = None
+        self._no_evidence_streak = 0
 
     def _find_candidate(self, candidates: list[MatchCandidate], track_id: int) -> MatchCandidate | None:
         for c in candidates:
@@ -354,6 +358,7 @@ class NowPlayingService:
         self._anchor_offset = None
         self._miss_count = 0
         self._buffer.clear()
+        self._no_evidence_streak = 0  # the expiry clock measures the gap, so it starts now
 
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
         """Check if candidate is the next track on the same album.
@@ -429,6 +434,7 @@ class NowPlayingService:
         self._anchor_time = None
         self._anchor_offset = None
         self._buffer.clear()
+        self._no_evidence_streak = 0  # the expiry clock measures the gap, so it starts now
         if self._last_feed_time and (time.time() - self._last_feed_time) < IDLE_TIMEOUT_PLAYING_S:
             self._status = "listening"
         else:

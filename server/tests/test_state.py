@@ -552,6 +552,56 @@ class TestNoEvidenceExpiry:
             await service.feed([])
         assert service._no_evidence_streak == 0
 
+    @pytest.mark.asyncio
+    async def test_organic_drop_gets_full_expiry_window(self, service):
+        """A track maintained weakly (4-5, below evidence bar) grows the
+        streak while playing; when it organically drops via grace misses,
+        the expiry clock must restart — the context keeps the full
+        15-frame gap window."""
+        strong = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([strong])
+        await service.feed([strong])
+        weak = make_candidate(track_id=1, album_id=10, score=5)
+        for _ in range(16):  # streak would grow well past the threshold
+            await service.feed([weak])
+        assert service.get_state().status == "playing"
+        for _ in range(6):  # grace misses -> organic drop
+            await service.feed([])
+        assert service.get_state().status == "listening"
+        assert service._last_played is not None
+        for _ in range(14):
+            await service.feed([])
+        assert service._last_played is not None  # full window survives
+        await service.feed([])  # 15th gap frame
+        assert service._last_played is None
+
+    @pytest.mark.asyncio
+    async def test_expiry_suppressed_while_playing(self, service):
+        """A playing track maintained below the evidence bar is never
+        expired out from under itself."""
+        strong = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([strong])
+        await service.feed([strong])
+        weak = make_candidate(track_id=1, album_id=10, score=5)
+        for _ in range(20):
+            await service.feed([weak])
+        assert service.get_state().status == "playing"
+        assert service._current is not None
+
+    @pytest.mark.asyncio
+    async def test_cross_album_candidates_do_not_reset_streak(self, service):
+        """Off-album matches are not evidence for the context album — the
+        expiry clock keeps running (shifting track_ids so nothing
+        stabilizes into a promote)."""
+        played = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([played])
+        await service.feed([played])
+        _drop_to_listening(service, played)
+        for i, tid in enumerate([51, 52, 53], start=1):
+            await service.feed([make_candidate(track_id=tid, album_id=9, score=20)])
+            assert service._no_evidence_streak == i
+        assert service._last_played is not None
+
 
 class TestDeletionHooks:
     def _layout_svc(self, tracks):
