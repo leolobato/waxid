@@ -71,6 +71,7 @@ class TestStability:
         c = make_candidate()
         await service.feed([c])
         await service.feed([c])
+        await service.feed([c])
         state = service.get_state()
         assert state.status == "playing"
 
@@ -748,6 +749,36 @@ class TestChallengerGuard:
         await service.feed([fading, rising])
         await service.feed([fading, rising])
         assert service.get_state().track_id == 2
+
+    @pytest.mark.asyncio
+    async def test_lone_junk_at_promote_bar_does_not_promote_after_track_end(self, service):
+        """No-current window with context: a lone cross-album false positive
+        repeating at the promote bar has no field to be measured against —
+        the vacuum floor (>= 9) must block it."""
+        played = make_candidate(track_id=1, album_id=10, score=20)
+        await service.feed([played])
+        await service.feed([played])
+        _drop_to_listening(service, played)
+        junk = make_candidate(track_id=50, album_id=9, score=6)
+        await service.feed([junk])
+        await service.feed([junk])
+        assert service.get_state().status == "listening"
+
+    @pytest.mark.asyncio
+    async def test_lone_junk_at_promote_bar_does_not_promote_without_context(self, service):
+        junk = make_candidate(track_id=50, album_id=9, score=6)
+        await service.feed([junk])
+        await service.feed([junk])
+        assert service.get_state().status == "listening"
+
+    @pytest.mark.asyncio
+    async def test_clear_lone_candidate_promotes_in_vacuum(self, service):
+        """A genuinely playing record clears the vacuum floor quickly."""
+        real = make_candidate(track_id=7, album_id=2, score=9)
+        await service.feed([real])
+        await service.feed([real])
+        assert service.get_state().status == "playing"
+        assert service.get_state().track_id == 7
 
 
 class TestTrackEndBufferClear:

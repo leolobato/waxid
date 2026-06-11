@@ -35,7 +35,7 @@ flowchart TD
 
     G -- "yes" --> REL["Context expires:<br/>last_played = None"]
     G -- "no" --> SEQ
-    REL --> SEQ{"TOP raw candidate is the hinted<br/>sequential-next, at raw ≥ 4? 🔧<br/>(shortcut: strong prior)"}
+    REL --> SEQ{"TOP raw candidate is the hinted<br/>sequential-next, at raw ≥ 4? 🔧<br/>(shortcut: strong prior — evaluated<br/>after stability, only when the current<br/>track isn't alive in the frame)"}
 
     SEQ -- "yes" --> PROM
     SEQ -- "no" --> STAB{"Any track at raw ≥ 6<br/>in 2 of last 3 frames?<br/>(counted per track across the<br/>full candidate lists)"}
@@ -125,7 +125,7 @@ above (🔧):
    a sparse or fading track would consume the 45s window before the gap
    even started, expiring the context ~3s after the needle lift
    (found during implementation review). The same reset applies on
-   promote, idle, and the deletion hooks.
+   promote, idle, and the deletion hooks. Expiry is also suppressed while a track is playing — only gaps count.
 
 ## Honest trade-offs
 

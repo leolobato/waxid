@@ -34,7 +34,6 @@ class AlbumTrackEntry:
 @dataclass
 class AlbumLayout:
     by_track_id: dict[int, AlbumTrackEntry]
-    sides: dict[str | None, list[AlbumTrackEntry]]
 
 
 _POSITION_NUMBER_RE = re.compile(r"(\d+)\s*$")
@@ -197,7 +196,6 @@ class NowPlayingService:
         ordered = sorted(rows, key=sort_key)
 
         by_track_id: dict[int, AlbumTrackEntry] = {}
-        sides: dict[str | None, list[AlbumTrackEntry]] = {}
         for i, row in enumerate(ordered, start=1):
             entry = AlbumTrackEntry(
                 track_id=int(row["track_id"]),
@@ -208,9 +206,8 @@ class NowPlayingService:
                 effective_track_number=i,
             )
             by_track_id[entry.track_id] = entry
-            sides.setdefault(entry.side, []).append(entry)
 
-        layout = AlbumLayout(by_track_id=by_track_id, sides=sides)
+        layout = AlbumLayout(by_track_id=by_track_id)
         self._album_layout_cache[album_id] = layout
         return layout
 
@@ -338,6 +335,11 @@ class NowPlayingService:
             for cand in frame.values():
                 if cand.album_id != winner.album_id and cand.score > runner_up:
                     runner_up = cand.score
+        if not runner_up and not cur_best:
+            # Nothing to measure a lead against — require an absolute one,
+            # so a lone false positive repeating at the promote bar can't
+            # take over during a quiet window.
+            return winner.score >= MIN_PROMOTE_SCORE * CROSS_ALBUM_MARGIN
         if runner_up and winner.score < runner_up * CROSS_ALBUM_MARGIN:
             return False
         if cur_best and winner.score < cur_best * CROSS_ALBUM_MARGIN:
