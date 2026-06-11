@@ -624,6 +624,18 @@ class TestDeletionHooks:
         finally:
             svc.shutdown()
 
+    def test_on_album_deleted_clears_last_played_when_between_tracks(self):
+        svc = self._layout_svc([])
+        try:
+            last = make_candidate(track_id=1, album_id=10, score=20)
+            svc._last_played = last   # between-tracks: no _current
+            svc._status = "listening"
+            svc.on_album_deleted(10)
+            assert svc._last_played is None
+            assert svc._status == "listening"  # status unchanged
+        finally:
+            svc.shutdown()
+
 
 class TestDonaOlimpiaRegression:
     """A sparse next-track promotes on its very first frame at raw score 5

@@ -512,8 +512,9 @@ def test_listen_low_hash_density_discards_candidates(client, monkeypatch):
 
 
 def test_listen_passes_expected_next_hints_to_matcher(client, monkeypatch):
-    """When a track is playing on a locked album, the matcher receives both
-    the current track id and the expected-next track id as hints."""
+    """When a track is playing, the matcher receives both the current
+    track_id and the expected-next track_id as hints (the album context
+    is derived from _current / _last_played)."""
     import wave, io, numpy as np
     from app import main as app_main
     from app.models import MatchCandidate
