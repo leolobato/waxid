@@ -138,7 +138,7 @@ class TestSequentialTrackShortcut:
         await sequential_service.feed([c1])
         await sequential_service.feed([c1])
 
-        c2 = make_candidate(track_id=2, track_number=2, score=5)
+        c2 = make_candidate(track_id=2, track_number=2, score=3)
         await sequential_service.feed([c2])
         assert sequential_service.get_state().track_id == 1
 
@@ -426,7 +426,6 @@ class TestAlbumLock:
         service._current = None
         service._last_played = None
         service._buffer.clear()
-        service._pending_candidates.clear()
         cand99 = make_candidate(track_id=99, album_id=20, score=20)
         await service.feed([cand99])
         await service.feed([cand99])
@@ -443,7 +442,6 @@ class TestAlbumLock:
         service._current = None
         service._last_played = None
         service._buffer.clear()
-        service._pending_candidates.clear()
         cand2 = make_candidate(track_id=2, album_id=10, score=20)
         await service.feed([cand2])
         await service.feed([cand2])
@@ -451,94 +449,9 @@ class TestAlbumLock:
         assert service._session_played == {1, 2}
 
 
-class TestApplyBoosts:
+class TestExpectedNextTrackIds:
     def _layout_svc(self, tracks):
         return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
-
-    def test_unlocked_returns_scores_unchanged(self):
-        svc = self._layout_svc([])
-        try:
-            c = make_candidate(track_id=1, album_id=10, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            assert boosted[0].score == 7
-            assert infos[0].raw_score == 7
-            assert infos[0].boost == 1.0
-        finally:
-            svc.shutdown()
-
-    def test_on_album_candidate_gets_1_5(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=1, album_id=10, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            import math
-            assert boosted[0].score == math.ceil(7 * 1.5)
-            assert infos[0].raw_score == 7
-            assert infos[0].boost == 1.5
-        finally:
-            svc.shutdown()
-
-    def test_off_album_when_locked_unchanged(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=99, album_id=20, score=7)
-            boosted, infos = svc.apply_boosts([c])
-            assert boosted[0].score == 7
-            assert infos[0].boost == 1.0
-        finally:
-            svc.shutdown()
-
-    def test_expected_next_sequential_gets_2_5(self):
-        tracks = [
-            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
-        ]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
-            c = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
-            boosted, infos = svc.apply_boosts([c])
-            import math
-            assert boosted[0].score == math.ceil(5 * 2.5)
-            assert infos[0].boost == 2.5
-        finally:
-            svc.shutdown()
-
-    def test_boosted_score_is_int(self):
-        tracks = [{"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1}]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            c = make_candidate(track_id=1, album_id=10, score=3)
-            boosted, _ = svc.apply_boosts([c])
-            # ceil(3 * 1.5) = 5, must be int (not 4.5 or 4)
-            assert boosted[0].score == 5
-            assert isinstance(boosted[0].score, int)
-        finally:
-            svc.shutdown()
-
-    def test_apply_boosts_resorts_by_boosted_score(self):
-        tracks = [
-            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
-        ]
-        svc = self._layout_svc(tracks)
-        try:
-            svc._locked_album_id = 10
-            svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
-            off = make_candidate(track_id=99, album_id=20, score=8)
-            nxt = make_candidate(track_id=2, album_id=10, track_number=2, score=5)
-            boosted, _ = svc.apply_boosts([off, nxt])
-            # expected-next: 5 * 2.5 = 13 beats off-album 8
-            assert boosted[0].track_id == 2
-            assert boosted[1].track_id == 99
-        finally:
-            svc.shutdown()
 
     def test_expected_next_track_ids_default(self):
         tracks = [
@@ -547,13 +460,12 @@ class TestApplyBoosts:
         ]
         svc = self._layout_svc(tracks)
         try:
-            svc._locked_album_id = 10
             svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1)
             assert svc.expected_next_track_ids() == {2}
         finally:
             svc.shutdown()
 
-    def test_expected_next_track_ids_empty_when_unlocked(self):
+    def test_expected_next_track_ids_empty_without_context(self):
         svc = self._layout_svc([])
         try:
             assert svc.expected_next_track_ids() == set()
@@ -561,100 +473,17 @@ class TestApplyBoosts:
             svc.shutdown()
 
     def test_expected_next_excludes_bonus_track_with_no_side(self):
-        """Bonus track at effective_track_number = ref+1 is NOT in expected-next
-        — the sequential path requires a real side so that the x2.5 boost is
-        reserved for side-flip candidates."""
+        """A side-less bonus track at etn ref+1 is not 'next' — it isn't on
+        the vinyl sequence."""
         tracks = [
             {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
             {"track_id": 2, "album_id": 10, "side": None, "position": None, "track_number": 2},
         ]
         svc = self._layout_svc(tracks)
         try:
-            svc._locked_album_id = 10
             svc._last_played = make_candidate(track_id=1, album_id=10, track_number=1,
                                               side="A", position="A1")
             assert svc.expected_next_track_ids() == set()
-            bonus = make_candidate(track_id=2, album_id=10, track_number=2,
-                                   side=None, position=None, score=5)
-            assert svc._is_expected_next(bonus) is False
-        finally:
-            svc.shutdown()
-
-
-class TestSideFlipExpectedNext:
-    def _two_side_svc(self):
-        tracks = [
-            {"track_id": 10, "album_id": 50, "side": "A", "position": "A1", "track_number": 1},
-            {"track_id": 11, "album_id": 50, "side": "A", "position": "A2", "track_number": 2},
-            {"track_id": 20, "album_id": 50, "side": "B", "position": "B1", "track_number": 3},
-            {"track_id": 21, "album_id": 50, "side": "B", "position": "B2", "track_number": 4},
-            {"track_id": 30, "album_id": 50, "side": None, "position": None, "track_number": 5},
-        ]
-        return NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
-
-    def test_side_flip_boosts_other_side_after_silence(self):
-        svc = self._two_side_svc()
-        try:
-            svc._locked_album_id = 50
-            svc._session_played = {20, 21}  # finished side B
-            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
-                                              position="B2", track_number=4)
-            svc._silence_streak = 5  # >= SILENCE_FRAMES_FOR_FLIP (4)
-            # Candidate from side A
-            cand_a = make_candidate(track_id=10, album_id=50, side="A",
-                                    position="A1", track_number=1, score=5)
-            assert svc._is_expected_next(cand_a) is True
-            assert svc.expected_next_track_ids() == {10, 11}
-        finally:
-            svc.shutdown()
-
-    def test_side_flip_requires_silence(self):
-        svc = self._two_side_svc()
-        try:
-            svc._locked_album_id = 50
-            svc._session_played = {20, 21}
-            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
-                                              position="B2", track_number=4)
-            svc._silence_streak = 2  # below SILENCE_FRAMES_FOR_FLIP
-            cand_a = make_candidate(track_id=10, album_id=50, side="A",
-                                    position="A1", track_number=1, score=5)
-            # Not the sequential next (there's no track #5 on side B),
-            # and silence hasn't elapsed -> expected-next must be False.
-            assert svc._is_expected_next(cand_a) is False
-            assert svc.expected_next_track_ids() == set()
-        finally:
-            svc.shutdown()
-
-    def test_side_flip_excludes_already_played(self):
-        svc = self._two_side_svc()
-        try:
-            svc._locked_album_id = 50
-            svc._session_played = {20, 21, 10}  # 10 already played
-            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
-                                              position="B2", track_number=4)
-            svc._silence_streak = 5
-            cand_played = make_candidate(track_id=10, album_id=50, side="A",
-                                         position="A1", track_number=1, score=5)
-            cand_unplayed = make_candidate(track_id=11, album_id=50, side="A",
-                                           position="A2", track_number=2, score=5)
-            assert svc._is_expected_next(cand_played) is False
-            assert svc._is_expected_next(cand_unplayed) is True
-            assert svc.expected_next_track_ids() == {11}
-        finally:
-            svc.shutdown()
-
-    def test_side_flip_excludes_no_side_tracks(self):
-        svc = self._two_side_svc()
-        try:
-            svc._locked_album_id = 50
-            svc._session_played = {20, 21}
-            svc._last_played = make_candidate(track_id=21, album_id=50, side="B",
-                                              position="B2", track_number=4)
-            svc._silence_streak = 5
-            cand_no_side = make_candidate(track_id=30, album_id=50, side=None,
-                                          position=None, track_number=5, score=5)
-            assert svc._is_expected_next(cand_no_side) is False
-            assert 30 not in svc.expected_next_track_ids()
         finally:
             svc.shutdown()
 
@@ -670,7 +499,6 @@ class TestCrossAlbumRelease:
         service._current = None
         service._status = "listening"
         service._buffer.clear()
-        service._pending_candidates.clear()
         # Two strong frames for an off-album candidate trigger stability promotion.
         await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
         await service.feed([make_candidate(track_id=99, album_id=20, score=20)])
@@ -792,8 +620,8 @@ class TestDeletionHooks:
 
 
 class TestDonaOlimpiaRegression:
-    """Recreates the failure documented in the spec: a sparse next-track
-    on a locked album promoting on its very first frame at raw score 5."""
+    """A sparse next-track promotes on its very first frame at raw score 5
+    (>= MIN_SEQUENTIAL_SCORE) — no boost machinery needed in v2."""
 
     @pytest.mark.asyncio
     async def test_sparse_expected_next_promotes_on_first_frame(self):
@@ -803,27 +631,102 @@ class TestDonaOlimpiaRegression:
         ]
         svc = NowPlayingService(get_tracks_for_album=lambda _aid: tracks)
         try:
-            # Establish the lock with Jazz Carnival, then drop to listening
-            # so the next promote must use the sequential-with-boost path.
             jazz = make_candidate(track_id=5, album_id=126, track_number=5,
                                   side="B", position="B1", score=20)
             await svc.feed([jazz])
             await svc.feed([jazz])
-            assert svc._locked_album_id == 126
+            assert svc.get_state().track_id == 5
+            # Drop to listening so the next promote must use the shortcut.
             svc._status = "listening"
             svc._last_played = jazz
             svc._current = None
             svc._buffer.clear()
-            svc._pending_candidates.clear()
 
-            # Mimic the listen handler: build raw candidates, apply boosts, feed.
-            dona_raw = make_candidate(track_id=6, album_id=126, track_number=6,
-                                      side="B", position="B2", score=5)
-            boosted, _ = svc.apply_boosts([dona_raw])
-            # ceil(5 * 2.5) = 13 which is >= MIN_PROMOTE_SCORE
-            assert boosted[0].score == 13
-            await svc.feed(boosted)
+            dona = make_candidate(track_id=6, album_id=126, track_number=6,
+                                  side="B", position="B2", score=5)
+            await svc.feed([dona])
             assert svc.get_state().status == "playing"
             assert svc.get_state().track_id == 6
         finally:
             svc.shutdown()
+
+
+class TestFullFrameStability:
+    @pytest.mark.asyncio
+    async def test_challenger_not_on_top_still_accumulates_stability(self, service):
+        """Junk can occupy rank 1 with shifting track_ids; the true track
+        accumulates 2-of-3 from rank 2 and promotes (needs a clear lead:
+        >= 1.5x the best other-album score, since there is no context)."""
+        challenger = make_candidate(track_id=7, album_id=2, score=35)
+        junk1 = make_candidate(track_id=50, album_id=9, score=21)
+        junk2 = make_candidate(track_id=51, album_id=9, score=21)
+        await service.feed([junk1, challenger])
+        await service.feed([junk2, challenger])
+        assert service.get_state().status == "playing"
+        assert service.get_state().track_id == 7
+
+    @pytest.mark.asyncio
+    async def test_no_context_promote_needs_clear_lead(self, service):
+        """Without album context, a barely-stable track does not promote
+        while the field is close (anti-spurious guard)."""
+        challenger = make_candidate(track_id=7, album_id=2, score=20)
+        junk1 = make_candidate(track_id=51, album_id=9, score=18)
+        junk2 = make_candidate(track_id=52, album_id=9, score=18)
+        await service.feed([junk1, challenger])
+        await service.feed([junk2, challenger])
+        # 20 < 18 * 1.5 — guard blocks the promote.
+        assert service.get_state().status == "listening"
+
+
+class TestChallengerGuard:
+    @pytest.mark.asyncio
+    async def test_stable_challenger_dethrones_weak_current(self, service):
+        """A wrongly-promoted track sustained by weak scores no longer squats:
+        a stable, clearly-stronger cross-album challenger takes over."""
+        wrong = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([wrong])
+        await service.feed([wrong])
+        assert service.get_state().track_id == 1
+        cur_weak = make_candidate(track_id=1, album_id=1, score=6)
+        right = make_candidate(track_id=9, album_id=3, score=40)
+        await service.feed([cur_weak, right])
+        await service.feed([cur_weak, right])
+        assert service.get_state().track_id == 9
+
+    @pytest.mark.asyncio
+    async def test_cross_album_challenger_blocked_without_margin(self, service):
+        """A cross-album rival that does not clearly beat the current track
+        (>= 1.5x) cannot steal the now-playing slot."""
+        cur = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([cur])
+        await service.feed([cur])
+        rival = make_candidate(track_id=9, album_id=3, score=25)
+        await service.feed([cur, rival])
+        await service.feed([cur, rival])
+        # 25 < 20 * 1.5 — current track stays.
+        assert service.get_state().track_id == 1
+
+    @pytest.mark.asyncio
+    async def test_same_album_neighbor_below_current_does_not_steal(self, service):
+        """An album-mate cross-matching at a low score never outranks the
+        current track in the stability winner selection."""
+        cur = make_candidate(track_id=1, album_id=1, score=50)
+        await service.feed([cur])
+        await service.feed([cur])
+        neighbor = make_candidate(track_id=2, album_id=1, score=7)
+        await service.feed([cur, neighbor])
+        await service.feed([cur, neighbor])
+        assert service.get_state().track_id == 1
+
+    @pytest.mark.asyncio
+    async def test_same_album_switch_when_outscoring(self, service):
+        """Track transition without layout metadata: the next track rises
+        above the fading current one and takes over without a margin."""
+        cur = make_candidate(track_id=1, album_id=1, score=20)
+        await service.feed([cur])
+        await service.feed([cur])
+        fading = make_candidate(track_id=1, album_id=1, score=6)
+        rising = make_candidate(track_id=2, album_id=1, score=30)
+        await service.feed([fading, rising])
+        await service.feed([fading, rising])
+        assert service.get_state().track_id == 2

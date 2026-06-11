@@ -1,5 +1,4 @@
 import asyncio
-import math
 import re
 import time
 from dataclasses import dataclass
@@ -7,16 +6,15 @@ from typing import AsyncGenerator, Callable
 
 from .models import MatchCandidate, NowPlayingResponse
 
-MIN_PROMOTE_SCORE = 10
+MIN_PROMOTE_SCORE = 6        # = matcher min_count; one bar for everyone
+MIN_SEQUENTIAL_SCORE = 4     # hinted sequential-next shortcut
 MIN_MAINTAIN_SCORE = 4
+CROSS_ALBUM_MARGIN = 1.5
 BUFFER_SIZE = 3
 REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
 IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
-BOOST_ON_ALBUM = 1.5
-BOOST_EXPECTED_NEXT = 2.5
-SILENCE_FRAMES_FOR_FLIP = 4
 SILENCE_FRAMES_FOR_RELEASE = 20
 SILENCE_RMS_DBFS = -40.0
 HASH_MIN_COUNT = 150
@@ -36,12 +34,6 @@ class AlbumTrackEntry:
 class AlbumLayout:
     by_track_id: dict[int, AlbumTrackEntry]
     sides: dict[str | None, list[AlbumTrackEntry]]
-
-
-@dataclass
-class BoostInfo:
-    raw_score: int
-    boost: float
 
 
 _POSITION_NUMBER_RE = re.compile(r"(\d+)\s*$")
@@ -68,8 +60,7 @@ class NowPlayingService:
         get_tracks_for_album: Callable[[int], list[dict]] | None = None,
     ):
         self._get_tracks_for_album = get_tracks_for_album or (lambda _album_id: [])
-        self._buffer: list[tuple[int, int, int | None, int] | None] = []
-        self._pending_candidates: dict[int, MatchCandidate] = {}
+        self._buffer: list[dict[int, MatchCandidate]] = []
         self._current: MatchCandidate | None = None
         self._last_played: MatchCandidate | None = None  # remember last track for sequential detection
         self._anchor_time: float | None = None
@@ -109,39 +100,12 @@ class NowPlayingService:
         if self._status == "idle":
             self._status = "listening"
 
-        # If currently playing, keep the track alive as long as it shows up
-        # anywhere in the candidate list at or above the maintain threshold.
-        # This absorbs weak frames without flapping into "listening".
-        if self._status == "playing" and self._current is not None:
-            current_match = self._find_candidate(candidates, self._current.track_id)
-            if current_match is not None and current_match.score >= MIN_MAINTAIN_SCORE:
-                self._miss_count = 0
-                self._check_track_ended()
-                new_status = self._status
-                new_track_id = self._current.track_id if self._current else None
-                if old_status != new_status or old_track_id != new_track_id:
-                    await self._notify()
-                return
-
-        top = self._top_candidate(candidates)
-        entry = None
-        if top and top.score >= MIN_PROMOTE_SCORE:
-            entry = (top.track_id, top.album_id, top.track_number, top.score)
-            self._pending_candidates[top.track_id] = top
-
-        self._buffer.append(entry)
+        frame = {c.track_id: c for c in candidates if c.score >= MIN_PROMOTE_SCORE}
+        self._buffer.append(frame)
         if len(self._buffer) > BUFFER_SIZE:
             self._buffer.pop(0)
 
-        if (
-            top is not None
-            and top.score >= MIN_PROMOTE_SCORE
-            and self._is_sequential_track(top)
-        ):
-            self._promote(top, recorded_at)
-        else:
-            self._evaluate_stability(recorded_at)
-
+        self._advance(candidates, recorded_at)
         self._check_track_ended()
 
         new_status = self._status
@@ -269,20 +233,115 @@ class NowPlayingService:
         if self._last_played is not None and self._last_played.track_id == track_id:
             self._last_played = None
 
-    def _top_candidate(self, candidates: list[MatchCandidate]) -> MatchCandidate | None:
-        return candidates[0] if candidates else None
-
     def _find_candidate(self, candidates: list[MatchCandidate], track_id: int) -> MatchCandidate | None:
         for c in candidates:
             if c.track_id == track_id:
                 return c
         return None
 
+    def _advance(self, candidates: list[MatchCandidate], recorded_at: float | None) -> None:
+        """One decision pass per frame: keep / promote / count a miss."""
+        cur_match = (
+            self._find_candidate(candidates, self._current.track_id)
+            if self._current is not None else None
+        )
+        current_alive = (
+            self._status == "playing"
+            and cur_match is not None
+            and cur_match.score >= MIN_MAINTAIN_SCORE
+        )
+        if current_alive:
+            self._miss_count = 0
+
+        winner = self._stable_winner()
+        if winner is not None:
+            if self._current is not None and winner.track_id == self._current.track_id:
+                self._miss_count = 0
+                return
+            if self._passes_challenger_guard(winner):
+                self._promote(winner, recorded_at)
+                return
+
+        if current_alive:
+            return
+
+        # Sequential shortcut: only when the current track is absent/weak,
+        # so a strong current frame can't be stolen by a single cross-match.
+        top = candidates[0] if candidates else None
+        if (
+            top is not None
+            and top.score >= MIN_SEQUENTIAL_SCORE
+            and self._is_sequential_track(top)
+        ):
+            self._promote(top, recorded_at)
+            return
+
+        if self._status == "playing":
+            self._miss_count += 1
+            if self._miss_count >= GRACE_MISSES:
+                self._drop_current()
+
+    def _stable_winner(self) -> MatchCandidate | None:
+        """Highest-scoring track that appears in >= REQUIRED_MATCHES of the
+        buffered frames. Counts every candidate per frame, not just rank 1."""
+        counts: dict[int, int] = {}
+        latest: dict[int, MatchCandidate] = {}
+        for frame in self._buffer:  # oldest -> newest
+            for tid, cand in frame.items():
+                counts[tid] = counts.get(tid, 0) + 1
+                latest[tid] = cand
+        stable = [latest[tid] for tid, n in counts.items() if n >= REQUIRED_MATCHES]
+        if not stable:
+            return None
+        return max(stable, key=lambda c: c.score)
+
+    def _recent_best_score(self, track_id: int) -> int:
+        best = 0
+        for frame in self._buffer:
+            cand = frame.get(track_id)
+            if cand is not None and cand.score > best:
+                best = cand.score
+        return best
+
+    def _passes_challenger_guard(self, winner: MatchCandidate) -> bool:
+        """Stickiness as a score preference: any challenger must outscore the
+        current track's recent best; cross-album or no-context challengers
+        additionally need a CROSS_ALBUM_MARGIN lead over the field."""
+        cur_best = (
+            self._recent_best_score(self._current.track_id)
+            if self._current is not None else 0
+        )
+        if winner.score <= cur_best:
+            return False
+        ref = self._current or self._last_played
+        ctx_album = ref.album_id if ref is not None else None
+        if ctx_album is not None and winner.album_id == ctx_album:
+            return True
+        # Cross-album or no context: must clearly beat the field.
+        runner_up = 0
+        for frame in self._buffer:
+            for cand in frame.values():
+                if cand.album_id != winner.album_id and cand.score > runner_up:
+                    runner_up = cand.score
+        if runner_up and winner.score < runner_up * CROSS_ALBUM_MARGIN:
+            return False
+        if cur_best and winner.score < cur_best * CROSS_ALBUM_MARGIN:
+            return False
+        return True
+
+    def _drop_current(self) -> None:
+        self._last_played = self._current
+        self._status = "listening"
+        self._current = None
+        self._anchor_time = None
+        self._anchor_offset = None
+        self._miss_count = 0
+
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
         """Check if candidate is the next track on the same album.
-        Uses _current if playing, or _last_played if we're in a between-tracks gap.
-        Falls back to effective_track_number derived from position when raw
-        track_number is missing on either side."""
+        Uses _current if playing, or _last_played in a between-tracks gap.
+        effective_track_number is album-wide, so this crosses side
+        boundaries naturally (B1 follows the last track of side A)."""
         ref = self._current or self._last_played
         if ref is None:
             return False
@@ -293,107 +352,28 @@ class NowPlayingService:
         cand_entry = layout.by_track_id.get(candidate.track_id)
         if ref_entry is None or cand_entry is None:
             return False
+        if cand_entry.side is None:
+            return False  # bonus tracks aren't on the vinyl sequence
         return cand_entry.effective_track_number == ref_entry.effective_track_number + 1
 
-    def _is_last_track_of_side(self, layout: AlbumLayout, entry: AlbumTrackEntry) -> bool:
-        if entry.side is None:
-            return False
-        side_tracks = layout.sides.get(entry.side, [])
-        if not side_tracks:
-            return False
-        max_etn = max(t.effective_track_number for t in side_tracks)
-        return entry.effective_track_number == max_etn
-
-    def _side_flip_targets(self, layout: AlbumLayout, ref_entry: AlbumTrackEntry) -> set[int]:
-        """Unplayed tracks on sides other than ref.side, only when ref is
-        the last track of its side AND silence has lasted long enough."""
-        if ref_entry.side is None:
-            return set()
-        if not self._is_last_track_of_side(layout, ref_entry):
-            return set()
-        if self._silence_streak < SILENCE_FRAMES_FOR_FLIP:
-            return set()
-        return {
-            entry.track_id
-            for entry in layout.by_track_id.values()
-            if entry.side is not None
-            and entry.side != ref_entry.side
-            and entry.track_id not in self._session_played
-        }
-
-    def _is_expected_next(self, candidate: MatchCandidate) -> bool:
-        """True if `candidate` is the expected next track on the locked album.
-        Covers both the sequential case and the side-flip case."""
-        if self._locked_album_id is None:
-            return False
-        if candidate.album_id != self._locked_album_id:
-            return False
-        ref = self._current or self._last_played
-        if ref is None or ref.album_id != self._locked_album_id:
-            return False
-        layout = self._album_layout(self._locked_album_id)
-        ref_entry = layout.by_track_id.get(ref.track_id)
-        cand_entry = layout.by_track_id.get(candidate.track_id)
-        if ref_entry is None or cand_entry is None:
-            return False
-        # Sequential (bonus/no-side tracks never qualify as next)
-        if (
-            cand_entry.side is not None
-            and cand_entry.effective_track_number == ref_entry.effective_track_number + 1
-        ):
-            return True
-        # Side-flip
-        return cand_entry.track_id in self._side_flip_targets(layout, ref_entry)
-
     def expected_next_track_ids(self) -> set[int]:
-        """Track IDs the matcher should hint for the expected-next case.
-        Covers both the sequential case and the side-flip case."""
-        if self._locked_album_id is None:
-            return set()
+        """Track IDs the matcher should hint as the expected next track —
+        the etn+1 track(s) of the context track. Album-wide numbering means
+        this crosses side boundaries (covers the side-flip case for
+        in-order play)."""
         ref = self._current or self._last_played
-        if ref is None or ref.album_id != self._locked_album_id:
+        if ref is None:
             return set()
-        layout = self._album_layout(self._locked_album_id)
+        layout = self._album_layout(ref.album_id)
         ref_entry = layout.by_track_id.get(ref.track_id)
         if ref_entry is None:
             return set()
         target = ref_entry.effective_track_number + 1
-        sequential = {
+        return {
             entry.track_id
             for entry in layout.by_track_id.values()
-            if entry.side is not None
-            and entry.effective_track_number == target
+            if entry.side is not None and entry.effective_track_number == target
         }
-        return sequential | self._side_flip_targets(layout, ref_entry)
-
-    def apply_boosts(
-        self, candidates: list[MatchCandidate]
-    ) -> tuple[list[MatchCandidate], list[BoostInfo]]:
-        """Re-rank candidates by lock-aware boosts.
-
-        Returns (boosted_candidates, boost_infos) sorted by boosted score desc.
-        boost_infos is index-aligned with boosted_candidates and carries the
-        raw score plus the boost factor for logging.
-        """
-        annotated: list[tuple[MatchCandidate, int, float]] = []
-        for c in candidates:
-            if self._locked_album_id is None:
-                boost = 1.0
-            elif self._is_expected_next(c):
-                boost = BOOST_EXPECTED_NEXT
-            elif c.album_id == self._locked_album_id:
-                boost = BOOST_ON_ALBUM
-            else:
-                boost = 1.0
-            new_score = math.ceil(c.score * boost)
-            boosted_c = c.model_copy(update={"score": new_score})
-            annotated.append((boosted_c, c.score, boost))
-
-        annotated.sort(key=lambda t: t[0].score, reverse=True)
-
-        boosted = [t[0] for t in annotated]
-        infos = [BoostInfo(raw_score=t[1], boost=t[2]) for t in annotated]
-        return boosted, infos
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
         if candidate.album_id != self._locked_album_id:
@@ -412,37 +392,6 @@ class NowPlayingService:
         self._status = "playing"
         self._miss_count = 0
         self._buffer.clear()
-        self._pending_candidates.clear()
-
-    def _evaluate_stability(self, recorded_at: float | None = None) -> None:
-        if len(self._buffer) < 2:
-            return
-
-        counts: dict[int, int] = {}
-        for entry in self._buffer:
-            if entry is not None:
-                tid = entry[0]
-                counts[tid] = counts.get(tid, 0) + 1
-
-        for tid, count in counts.items():
-            if count >= REQUIRED_MATCHES:
-                if self._current and self._current.track_id == tid:
-                    self._miss_count = 0
-                    return
-                if tid in self._pending_candidates:
-                    self._promote(self._pending_candidates[tid], recorded_at)
-                return
-
-        # No stable track in buffer
-        if self._status == "playing":
-            self._miss_count += 1
-            if self._miss_count >= GRACE_MISSES:
-                self._last_played = self._current
-                self._status = "listening"
-                self._current = None
-                self._anchor_time = None
-                self._anchor_offset = None
-                self._miss_count = 0
 
     def _check_silence_release(self) -> None:
         if self._locked_album_id is None:
@@ -489,7 +438,6 @@ class NowPlayingService:
             self._anchor_time = None
             self._anchor_offset = None
             self._buffer.clear()
-            self._pending_candidates.clear()
             self._locked_album_id = None
             self._session_played = set()
             self._silence_streak = 0
