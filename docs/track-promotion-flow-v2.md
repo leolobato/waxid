@@ -1,5 +1,7 @@
 # v2 — simplified alternative
 
+> **Implemented 2026-06-11** on branch `feat/album-lock-and-silence`.
+
 Same goals as v1, but instead of adding counters to patch the lock system,
 v2 removes the machinery those patches compensate for. One idea drives it:
 
@@ -38,7 +40,7 @@ flowchart TD
     SEQ -- "yes" --> PROM
     SEQ -- "no" --> STAB{"Any track at raw ≥ 6<br/>in 2 of last 3 frames?<br/>(counted per track across the<br/>full candidate lists)"}
 
-    STAB -- "yes" --> CH{"Challenger guard 🔧:<br/>same album as context → promote<br/>cross-album or no context →<br/>conf ≥ 1.5× vs runner-up<br/>(and vs current's recent raw<br/>if something is playing)"}
+    STAB -- "yes" --> CH{"Challenger guard 🔧:<br/>must outscore current's recent best<br/>(incl. live frame score);<br/>cross-album or no context →<br/>additionally conf ≥ 1.5× vs the field<br/>and vs current"}
     CH -- "yes" --> PROM["PROMOTE:<br/>current = candidate<br/>status = playing<br/>anchor elapsed time<br/>context follows automatically"]
     CH -- "no" --> KEEP["Keep current track"]
     STAB -- "no" --> MAINT{"Current track in results<br/>at raw ≥ 4? (it's hinted)"}
@@ -117,6 +119,13 @@ above (🔧):
    (conf ≥ 1.5× vs runner-up) now applies whenever the promote is cross-album
    *or* there is no context — including the current = None windows (after
    track end, after a drop) that the previous wording left unguarded.
+4. **The expiry clock measures the gap, not the track.** The streak also
+   grows while a track is weakly maintained (raw 4–5 sits below the
+   evidence bar), so `_drop_current` and `_end_track` reset it — otherwise
+   a sparse or fading track would consume the 45s window before the gap
+   even started, expiring the context ~3s after the needle lift
+   (found during implementation review). The same reset applies on
+   promote, idle, and the deletion hooks.
 
 ## Honest trade-offs
 
@@ -154,7 +163,7 @@ methods, `_session_played`, and the lock bookkeeping all go away. The new code
 is a per-track stability count over full candidate frames and the challenger
 comparison — both small. The only matcher change is dropping the
 `max_results` slice in favor of returning every track ≥ `min_count` 🔧.
-Net diff is likely negative.
+Net diff is likely negative. (Confirmed: the implementation removed more code than it added.)
 
 Adversarial tests to add (from the review): hinted stale track at raw 1–3 for
 >15 frames must not block expiry; a true new-album track ranked below 5th for
