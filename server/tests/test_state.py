@@ -735,18 +735,23 @@ class TestChallengerGuard:
 class TestTrackEndBufferClear:
     @pytest.mark.asyncio
     async def test_ended_track_does_not_zombie_repromote(self, service):
-        """After a track ends by duration, leftover buffer frames must not
-        re-promote it on the next (even silent) feed."""
+        """After a track ends by duration (detected via get_state, like the
+        SSE poll), leftover buffer frames must not re-promote it on the next
+        silent feed."""
         c = make_candidate(offset_s=170.0, duration_s=180.0)
         with patch("app.state.time") as mock_time:
             mock_time.time.return_value = 1000.0
             await service.feed([c])
-            await service.feed([c])
-            await service.feed([c])  # buffer holds the track post-promote
+            await service.feed([c])   # promotes (buffer cleared here)
+            await service.feed([c])   # post-promote frame 1
+            await service.feed([c])   # post-promote frame 2
             assert service.get_state().status == "playing"
-            mock_time.time.return_value = 1015.0  # past duration
+
+            mock_time.time.return_value = 1015.0  # elapsed 185 >= 180
+            assert service.get_state().status == "listening"  # ends here
+
             await service.feed([])
-            assert service.get_state().status == "listening"
+            assert service.get_state().status == "listening"  # no zombie
 
     @pytest.mark.asyncio
     async def test_grace_misses_drop_to_listening(self, service):
