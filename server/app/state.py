@@ -258,7 +258,7 @@ class NowPlayingService:
             if self._current is not None and winner.track_id == self._current.track_id:
                 self._miss_count = 0
                 return
-            if self._passes_challenger_guard(winner):
+            if self._passes_challenger_guard(winner, cur_match):
                 self._promote(winner, recorded_at)
                 return
 
@@ -303,14 +303,20 @@ class NowPlayingService:
                 best = cand.score
         return best
 
-    def _passes_challenger_guard(self, winner: MatchCandidate) -> bool:
+    def _passes_challenger_guard(
+        self, winner: MatchCandidate, cur_match: MatchCandidate | None = None
+    ) -> bool:
         """Stickiness as a score preference: any challenger must outscore the
         current track's recent best; cross-album or no-context challengers
-        additionally need a CROSS_ALBUM_MARGIN lead over the field."""
+        additionally need a CROSS_ALBUM_MARGIN lead over the field.
+        cur_match supplies the current track's live score for frames where it
+        sits below MIN_PROMOTE_SCORE (absent from the buffer)."""
         cur_best = (
             self._recent_best_score(self._current.track_id)
             if self._current is not None else 0
         )
+        if cur_match is not None:
+            cur_best = max(cur_best, cur_match.score)
         if winner.score <= cur_best:
             return False
         ref = self._current or self._last_played
@@ -336,6 +342,7 @@ class NowPlayingService:
         self._anchor_time = None
         self._anchor_offset = None
         self._miss_count = 0
+        self._buffer.clear()
 
     def _is_sequential_track(self, candidate: MatchCandidate) -> bool:
         """Check if candidate is the next track on the same album.
@@ -417,6 +424,7 @@ class NowPlayingService:
         self._current = None
         self._anchor_time = None
         self._anchor_offset = None
+        self._buffer.clear()
         if self._last_feed_time and (time.time() - self._last_feed_time) < IDLE_TIMEOUT_PLAYING_S:
             self._status = "listening"
         else:
