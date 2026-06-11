@@ -18,7 +18,6 @@ class FingerprintConfig:
     min_count: int = 6
     max_query_hashes: int = 0  # 0 = unlimited; positive value caps query hashes for faster matching
     max_hash_fanout: int = 500  # ignore hashes with more than this many DB entries (0 = no stoplist)
-    max_results: int = 5
 
     @property
     def frame_duration_s(self) -> float:

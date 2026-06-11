@@ -40,3 +40,22 @@ def test_match_confidence_ratio(db_with_track):
     assert results[0]["track_id"] == track_id, "First track should win"
     assert results[0]["confidence"] is not None
     assert results[0]["confidence"] > 1.0
+
+def test_all_tracks_above_min_count_are_returned(db_with_track):
+    """v2: the state machine counts every credible track per frame, so the
+    matcher must not truncate results to a top-N."""
+    db, track_id = db_with_track
+    extra_ids = []
+    for n in range(6):
+        album_id, _ = db.insert_album(artist=f"X{n}", name=f"Album{n}")
+        tid = db.insert_track(album_id=album_id, artist=f"X{n}",
+                              album=f"Album{n}", track=f"Song{n}")
+        # Same hash values at a distinct constant offset per track, so each
+        # track accumulates ~20 aligned votes (well above min_count).
+        db.insert_hashes([(1000 + i, tid, i * 5 + (n + 1) * 1000)
+                          for i in range(10, 30)])
+        extra_ids.append(tid)
+    query_hashes = [(1000 + i, i * 5 - 50) for i in range(10, 30)]
+    results = match_hashes(query_hashes, db)
+    returned = {r["track_id"] for r in results}
+    assert returned == {track_id, *extra_ids}, f"got only {len(returned)} tracks"
