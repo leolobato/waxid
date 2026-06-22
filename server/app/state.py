@@ -17,7 +17,7 @@ IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
 MIN_EVIDENCE_SCORE = 6           # context-album raw score that counts as evidence
 NO_EVIDENCE_FRAMES_FOR_RELEASE = 15   # ~45s at one frame per ~3s
-SILENCE_RMS_DBFS = -40.0
+SILENCE_RMS_DBFS = -50.0   # quiet track intros sit ~-45 dBFS; HASH_MIN_COUNT is the real backstop
 HASH_MIN_COUNT = 150
 
 

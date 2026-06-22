@@ -72,9 +72,15 @@ class LastfmScrobbler:
         self._secret = secret
         self._client = httpx.AsyncClient(timeout=5.0)
         self._task: asyncio.Task | None = None
-        self._current_track_id: int | None = None
-        self._current_started_at: float | None = None
-        self._current_duration: float | None = None
+        # A play session survives brief drops to "listening". We bank the
+        # actual seconds played across segments and scrobble once that crosses
+        # the threshold — whether mid-play (timer) or at the moment it stops.
+        self._session_track_id: int | None = None
+        self._session_state = None              # last "playing" snapshot, for scrobble-on-stop
+        self._session_started_at: float | None = None  # first play -> scrobble timestamp
+        self._session_duration: float | None = None
+        self._played_s: float = 0.0             # banked seconds from finished segments
+        self._segment_start: float | None = None  # start of the open segment, None while paused
         self._last_scrobbled_track_id: int | None = None
         self._scrobble_timer: asyncio.Task | None = None
         if settings.lastfm_enabled and settings.lastfm_session_key:
@@ -98,8 +104,7 @@ class LastfmScrobbler:
     async def reconfigure(self, settings: Settings) -> None:
         self.stop()
         self._settings = settings
-        self._current_track_id = None
-        self._current_started_at = None
+        self._reset_session()
         self._last_scrobbled_track_id = None
         if settings.lastfm_enabled and settings.lastfm_session_key:
             self._start()
@@ -119,26 +124,52 @@ class LastfmScrobbler:
                     continue
                 if update.status == "playing" and update.track_id is not None:
                     await self._on_track_playing(update)
-                elif self._current_track_id is not None:
-                    self._on_track_stopped()
+                elif self._session_track_id is not None:
+                    await self._on_track_stopped()
         except asyncio.CancelledError:
             pass
 
-    async def _on_track_playing(self, state) -> None:
-        if state.track_id == self._current_track_id:
-            return
+    # --- session bookkeeping -------------------------------------------------
 
-        # Cancel pending scrobble timer for previous track
+    def _played_total(self) -> float:
+        """Active seconds played this session, including the open segment."""
+        total = self._played_s
+        if self._segment_start is not None:
+            total += time.time() - self._segment_start
+        return total
+
+    def _threshold(self) -> float:
+        return scrobble_delay(self._session_duration)
+
+    def _cancel_timer(self) -> None:
         if self._scrobble_timer and not self._scrobble_timer.done():
-            logger.info("Last.fm: cancelled scrobble timer (track changed)")
             self._scrobble_timer.cancel()
         self._scrobble_timer = None
 
-        self._current_track_id = state.track_id
-        self._current_started_at = time.time()
-        self._current_duration = state.duration_s
+    def _arm_timer(self) -> None:
+        """(Re)schedule a mid-play wakeup for the time still owed."""
+        if self._session_track_id == self._last_scrobbled_track_id:
+            return
+        self._cancel_timer()
+        remaining = max(0.0, self._threshold() - self._played_total())
+        self._scrobble_timer = asyncio.create_task(self._scrobble_after(remaining))
 
-        # Send updateNowPlaying
+    def _reset_session(self) -> None:
+        self._cancel_timer()
+        self._session_track_id = None
+        self._session_state = None
+        self._session_started_at = None
+        self._session_duration = None
+        self._played_s = 0.0
+        self._segment_start = None
+
+    def _bank_segment(self) -> None:
+        if self._segment_start is not None:
+            self._played_s += time.time() - self._segment_start
+            self._segment_start = None
+
+    @staticmethod
+    def _now_playing_params(state) -> dict[str, str]:
         params = {
             "artist": state.artist,
             "track": state.track,
@@ -146,48 +177,98 @@ class LastfmScrobbler:
         }
         if state.duration_s:
             params["duration"] = str(int(state.duration_s))
-        await self._call_lastfm("track.updateNowPlaying", params)
+        return params
 
-        # Start scrobble timer (unless already scrobbled this track)
+    # --- event handlers ------------------------------------------------------
+
+    async def _on_track_playing(self, state) -> None:
+        # Same track resuming or continuing.
+        if state.track_id == self._session_track_id:
+            self._session_state = state
+            if self._segment_start is None:
+                # Resuming after a brief drop: reopen a segment, keep banked time.
+                self._segment_start = time.time()
+                await self._call_lastfm("track.updateNowPlaying", self._now_playing_params(state))
+                if state.track_id != self._last_scrobbled_track_id:
+                    logger.info("Last.fm: resumed %s - %s (%.0fs of %.0fs played)",
+                                state.artist, state.track, self._played_total(), self._threshold())
+                    self._arm_timer()
+            return
+
+        # A different track: close out the previous session, scrobbling it if
+        # it already earned one, then begin a fresh session.
+        await self._finalize_session()
+        self._session_track_id = state.track_id
+        self._session_state = state
+        self._session_started_at = time.time()
+        self._session_duration = state.duration_s
+        self._played_s = 0.0
+        self._segment_start = time.time()
+
+        await self._call_lastfm("track.updateNowPlaying", self._now_playing_params(state))
         if state.track_id != self._last_scrobbled_track_id:
-            delay = scrobble_delay(state.duration_s)
-            logger.info("Last.fm: now playing %s - %s (scrobble in %.0fs)", state.artist, state.track, delay)
-            self._scrobble_timer = asyncio.create_task(self._scrobble_after(delay))
+            logger.info("Last.fm: now playing %s - %s (scrobble after %.0fs played)",
+                        state.artist, state.track, self._threshold())
+            self._arm_timer()
 
-    def _on_track_stopped(self) -> None:
-        if self._scrobble_timer and not self._scrobble_timer.done():
-            logger.info("Last.fm: cancelled scrobble timer (track stopped)")
-            self._scrobble_timer.cancel()
-        self._scrobble_timer = None
-        self._current_track_id = None
+    async def _on_track_stopped(self) -> None:
+        """The track left "playing". Bank the segment and scrobble if it has
+        already played long enough; otherwise keep the session paused so a
+        resume picks up where it left off."""
+        self._bank_segment()
+        self._cancel_timer()
+        if (self._session_track_id is not None
+                and self._session_track_id != self._last_scrobbled_track_id
+                and self._played_total() >= self._threshold()):
+            logger.info("Last.fm: track stopped past threshold (%.0fs played)", self._played_total())
+            await self._do_scrobble()
+
+    async def _finalize_session(self) -> None:
+        """Close the current session (on track change), scrobbling if owed."""
+        self._bank_segment()
+        self._cancel_timer()
+        if (self._session_track_id is not None
+                and self._session_track_id != self._last_scrobbled_track_id
+                and self._played_total() >= self._threshold()):
+            await self._do_scrobble()
+        self._reset_session()
 
     async def _scrobble_after(self, delay: float) -> None:
         try:
             await asyncio.sleep(delay)
-            if self._current_track_id is None:
-                logger.info("Last.fm: scrobble timer fired but no current track")
+            if self._session_track_id is None:
                 return
-            if self._current_track_id == self._last_scrobbled_track_id:
-                logger.info("Last.fm: scrobble timer fired but already scrobbled track %s", self._current_track_id)
+            if self._session_track_id == self._last_scrobbled_track_id:
+                return
+            if self._played_total() < self._threshold():
+                # Pauses pushed actual play behind the wall clock; wait the gap.
+                self._arm_timer()
                 return
             state = self._now_playing.get_state()
-            if state.status != "playing" or state.track_id != self._current_track_id:
-                logger.info("Last.fm: scrobble timer fired but track no longer playing (status=%s, track_id=%s, expected=%s)",
-                            state.status, state.track_id, self._current_track_id)
+            if state.status != "playing" or state.track_id != self._session_track_id:
+                # Not playing right now; the stop handler scrobbles if it's owed.
                 return
-            params = {
-                "artist": state.artist,
-                "track": state.track,
-                "album": state.album or "",
-                "timestamp": str(int(self._current_started_at)),
-            }
-            if state.duration_s:
-                params["duration"] = str(int(state.duration_s))
-            await self._call_lastfm("track.scrobble", params)
-            self._last_scrobbled_track_id = self._current_track_id
-            logger.info("Last.fm: scrobbled %s - %s", state.artist, state.track)
+            await self._do_scrobble()
         except asyncio.CancelledError:
             pass
+
+    async def _do_scrobble(self) -> None:
+        st = self._session_state
+        if st is None or self._session_started_at is None:
+            return
+        if self._session_track_id == self._last_scrobbled_track_id:
+            return
+        params = {
+            "artist": st.artist,
+            "track": st.track,
+            "album": st.album or "",
+            "timestamp": str(int(self._session_started_at)),
+        }
+        if st.duration_s:
+            params["duration"] = str(int(st.duration_s))
+        await self._call_lastfm("track.scrobble", params)
+        self._last_scrobbled_track_id = self._session_track_id
+        logger.info("Last.fm: scrobbled %s - %s", st.artist, st.track)
 
     async def _call_lastfm(self, method: str, params: dict[str, str]) -> None:
         if not self._settings.lastfm_session_key:
