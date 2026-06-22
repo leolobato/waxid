@@ -28,8 +28,11 @@
       </svg>
     </button>
 
+    <!-- State stage: all states share one absolutely-positioned box so swapping never reflows the parent -->
+    <div class="np-stage">
+
     <!-- Active state -->
-    <div class="np-content" x-show="nowPlaying?.status === 'playing'" x-transition>
+    <div class="np-content" x-show="nowPlaying?.status === 'playing'" x-transition:enter.opacity.duration.300ms x-transition:leave.opacity.duration.300ms>
       <div class="np-artwork-wrap">
         <template x-if="nowPlaying?.cover_url">
           <img class="np-artwork"
@@ -70,7 +73,7 @@
     </div>
 
     <!-- Listening state (with last album) -->
-    <div class="np-content" x-show="nowPlaying?.status === 'listening' && lastPlaying" x-transition>
+    <div class="np-content" x-show="nowPlaying?.status === 'listening' && lastPlaying" x-transition:enter.opacity.duration.300ms x-transition:leave.opacity.duration.300ms>
       <div class="np-artwork-wrap">
         <template x-if="lastPlaying?.cover_url">
           <img class="np-artwork"
@@ -94,7 +97,7 @@
     </div>
 
     <!-- Listening state (no previous album) -->
-    <div class="np-idle" x-show="nowPlaying?.status === 'listening' && !lastPlaying" x-transition>
+    <div class="np-idle" x-show="nowPlaying?.status === 'listening' && !lastPlaying" x-transition:enter.opacity.duration.300ms x-transition:leave.opacity.duration.300ms>
       <div class="np-vinyl-icon">
         <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="10"></circle>
@@ -107,7 +110,7 @@
     </div>
 
     <!-- Starting state -->
-    <div class="np-idle" x-show="nowPlaying?.status === 'starting'" x-transition>
+    <div class="np-idle" x-show="nowPlaying?.status === 'starting'" x-transition:enter.opacity.duration.300ms x-transition:leave.opacity.duration.300ms>
       <div class="np-vinyl-icon">
         <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="10"></circle>
@@ -118,7 +121,7 @@
     </div>
 
     <!-- Idle state -->
-    <div class="np-idle" x-show="!nowPlaying || nowPlaying?.status === 'idle'" x-transition>
+    <div class="np-idle" x-show="!nowPlaying || nowPlaying?.status === 'idle'" x-transition:enter.opacity.duration.300ms x-transition:leave.opacity.duration.300ms>
       <div class="np-vinyl-icon">
         <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="10"></circle>
@@ -127,6 +130,9 @@
       </div>
       <div class="np-listening">Not Playing</div>
     </div>
+
+    </div>
+    <!-- /np-stage -->
 
     <!-- Listen toggle (Android client only) -->
     <button class="listen-toggle"
