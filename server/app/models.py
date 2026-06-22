@@ -111,6 +111,7 @@ class HealthResponse(BaseModel):
     tracks_count: int
     hashes_count: int
     albums_count: int
+    version: str | None = None
 
 
 class AlbumUpdate(BaseModel):
