@@ -61,6 +61,7 @@ def test_health(client):
     assert data["status"] == "ok"
     assert data["tracks_count"] == 0
     assert data["albums_count"] == 0
+    assert "version" in data
 
 
 def test_create_album(client):
