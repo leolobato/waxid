@@ -286,7 +286,8 @@ class TestScrobblerEndToEnd:
             assert call_log[0][0] == "track.updateNowPlaying"
             assert call_log[0][1]["artist"] == "Artist"
 
-            # Manually trigger the scrobble (instead of waiting 30s)
+            # Simulate having played past the 30s threshold, then fire the timer.
+            scrobbler._played_s = 35.0
             if scrobbler._scrobble_timer and not scrobbler._scrobble_timer.done():
                 scrobbler._scrobble_timer.cancel()
             await scrobbler._scrobble_after(0)
@@ -300,4 +301,89 @@ class TestScrobblerEndToEnd:
 
             scrobbler.stop()
 
+        svc.shutdown()
+
+
+class TestScrobblerAccumulation:
+    @pytest.mark.asyncio
+    async def test_does_not_scrobble_via_timer_before_enough_play(self):
+        """The timer firing early (pauses pushed play behind wall clock) must
+        not scrobble; it re-arms for the remaining time instead."""
+        svc = NowPlayingService()
+        scrobbler = LastfmScrobbler(
+            svc, Settings(lastfm_enabled=True, lastfm_session_key="sk"),
+            api_key="key", secret="secret",
+        )
+        with patch.object(scrobbler, "_call_lastfm", new_callable=AsyncMock) as mock_call:
+            c = make_candidate(duration_s=180.0)  # threshold 90s
+            await svc.feed([c])
+            await svc.feed([c])
+            await asyncio.sleep(0.05)
+
+            scrobbler._played_s = 5.0  # well under 90s
+            scrobbler._segment_start = None
+            await scrobbler._scrobble_after(0)
+
+            scrobble_calls = [c for c in mock_call.call_args_list if c[0][0] == "track.scrobble"]
+            assert len(scrobble_calls) == 0
+            scrobbler.stop()
+        svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_scrobbles_on_stop_when_past_threshold(self):
+        """A track that crosses the threshold then drops to listening should be
+        scrobbled at the drop, not lost."""
+        svc = NowPlayingService()
+        scrobbler = LastfmScrobbler(
+            svc, Settings(lastfm_enabled=True, lastfm_session_key="sk"),
+            api_key="key", secret="secret",
+        )
+        with patch.object(scrobbler, "_call_lastfm", new_callable=AsyncMock) as mock_call:
+            c = make_candidate(duration_s=60.0)  # threshold 30s
+            await svc.feed([c])
+            await svc.feed([c])
+            await asyncio.sleep(0.05)
+
+            # Pretend it played past threshold, then the track drops.
+            scrobbler._played_s = 35.0
+            for _ in range(7):
+                await svc.feed([])
+            await asyncio.sleep(0.05)
+
+            scrobble_calls = [c for c in mock_call.call_args_list if c[0][0] == "track.scrobble"]
+            assert len(scrobble_calls) == 1
+            assert scrobble_calls[0][0][1]["track"] == "Track 1"
+            scrobbler.stop()
+        svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_brief_drop_keeps_session_and_accumulates(self):
+        """A brief drop must not reset the played counter; a resume of the same
+        track keeps the session and re-arms for the remaining time."""
+        svc = NowPlayingService()
+        scrobbler = LastfmScrobbler(
+            svc, Settings(lastfm_enabled=True, lastfm_session_key="sk"),
+            api_key="key", secret="secret",
+        )
+        with patch.object(scrobbler, "_call_lastfm", new_callable=AsyncMock):
+            c = make_candidate(track_id=7, duration_s=180.0)  # threshold 90s
+            await svc.feed([c])
+            await svc.feed([c])
+            await asyncio.sleep(0.05)
+            scrobbler._played_s = 40.0  # banked so far
+
+            # Brief drop then resume of the SAME track.
+            for _ in range(7):
+                await svc.feed([])
+            await asyncio.sleep(0.05)
+            assert scrobbler._session_track_id == 7        # session survives
+            assert scrobbler._played_s >= 40.0             # not reset
+            assert scrobbler._last_scrobbled_track_id != 7  # not yet scrobbled
+
+            await svc.feed([c])
+            await svc.feed([c])
+            await asyncio.sleep(0.05)
+            assert scrobbler._session_track_id == 7
+            assert scrobbler._segment_start is not None     # segment reopened
+            scrobbler.stop()
         svc.shutdown()
