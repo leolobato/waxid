@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Callable
 
-from .models import MatchCandidate, NowPlayingResponse
+from .models import FinishedTrack, MatchCandidate, NowPlayingResponse
 
 MIN_PROMOTE_SCORE = 6        # = matcher min_count; one bar for everyone
 MIN_SEQUENTIAL_SCORE = 4     # hinted sequential-next shortcut
@@ -19,6 +19,7 @@ MIN_EVIDENCE_SCORE = 6           # context-album raw score that counts as eviden
 NO_EVIDENCE_FRAMES_FOR_RELEASE = 15   # ~45s at one frame per ~3s
 SILENCE_RMS_DBFS = -50.0   # quiet track intros sit ~-45 dBFS; HASH_MIN_COUNT is the real backstop
 HASH_MIN_COUNT = 150
+COMPLETION_MIN_FRACTION = 0.9   # a track counts as "finished" once it plays this far
 
 
 @dataclass
@@ -73,6 +74,7 @@ class NowPlayingService:
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
         self._no_evidence_streak: int = 0
+        self._finished: FinishedTrack | None = None  # one-shot: track that just played through
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -115,11 +117,13 @@ class NowPlayingService:
         self._check_track_ended()
 
         if self._status != "playing" or self._current is None:
-            return NowPlayingResponse(status=self._status)
+            return NowPlayingResponse(status=self._status, finished_track=self._finished)
 
         elapsed = None
         if self._anchor_time is not None and self._anchor_offset is not None:
             elapsed = round(self._anchor_offset + (time.time() - self._anchor_time), 1)
+
+        tracks_on_side, is_last_on_side, sides = self._side_progress(self._current)
 
         return NowPlayingResponse(
             status="playing",
@@ -140,14 +144,77 @@ class NowPlayingService:
             offset_s=self._anchor_offset,
             score=self._current.score,
             confidence=self._current.confidence,
+            tracks_on_side=tracks_on_side,
+            is_last_on_side=is_last_on_side,
+            sides=sides,
+            finished_track=self._finished,
         )
+
+    def _current_elapsed(self) -> float | None:
+        if self._anchor_time is None or self._anchor_offset is None:
+            return None
+        return self._anchor_offset + (time.time() - self._anchor_time)
+
+    def _mark_finished(self, candidate: MatchCandidate | None, elapsed: float | None) -> None:
+        """Record a completed track for one-shot emission, but only if it
+        played through at least COMPLETION_MIN_FRACTION of its duration. Mid-track
+        stops (pause, needle lift, lost detection) fall short and are ignored, so
+        no spurious "finished" is reported."""
+        if candidate is None or candidate.duration_s is None or elapsed is None:
+            return
+        if elapsed >= candidate.duration_s * COMPLETION_MIN_FRACTION:
+            self._finished = self._build_finished(candidate)
+
+    def _build_finished(self, candidate: MatchCandidate) -> FinishedTrack:
+        tracks_on_side, is_last_on_side, sides = self._side_progress(candidate)
+        return FinishedTrack(
+            track_id=candidate.track_id,
+            artist=candidate.artist,
+            album=candidate.album,
+            album_id=candidate.album_id,
+            track=candidate.track,
+            track_number=candidate.track_number,
+            side=candidate.side,
+            position=candidate.position,
+            year=candidate.year,
+            tracks_on_side=tracks_on_side,
+            is_last_on_side=is_last_on_side,
+            sides=sides,
+        )
+
+    def _side_progress(
+        self, current: MatchCandidate
+    ) -> tuple[int | None, bool | None, dict[str, int] | None]:
+        """Track counts per side for the release, plus how many tracks share
+        the current track's side and whether it is the last one on that side.
+        Returns (None, None, None) for bonus/digital tracks (side is None) or
+        when the album layout is unknown, since the side sequence is undefined.
+        Bonus tracks without a side are excluded from the counts."""
+        layout = self._album_layout(current.album_id)
+        cur_entry = layout.by_track_id.get(current.track_id)
+        if cur_entry is None or cur_entry.side is None:
+            return None, None, None
+        sides: dict[str, int] = {}
+        max_etn_by_side: dict[str, int] = {}
+        for entry in layout.by_track_id.values():
+            if entry.side is None:
+                continue
+            sides[entry.side] = sides.get(entry.side, 0) + 1
+            max_etn_by_side[entry.side] = max(
+                max_etn_by_side.get(entry.side, 0), entry.effective_track_number
+            )
+        is_last = cur_entry.effective_track_number == max_etn_by_side[cur_entry.side]
+        return sides[cur_entry.side], is_last, sides
 
     async def subscribe(self, timeout: float = 30.0) -> AsyncGenerator[NowPlayingResponse | None, None]:
         while True:
             try:
                 async with self._condition:
                     await asyncio.wait_for(self._condition.wait(), timeout=timeout)
-                yield self.get_state()
+                state = self.get_state()
+                # One-shot: a finished track is delivered on a single frame.
+                self._finished = None
+                yield state
             except asyncio.TimeoutError:
                 yield None
 
@@ -347,6 +414,9 @@ class NowPlayingService:
         return True
 
     def _drop_current(self) -> None:
+        # Lost mid-track: only counts as finished if it had already played
+        # nearly to the end (e.g. the run-out of the last track on a side).
+        self._mark_finished(self._current, self._current_elapsed())
         self._last_played = self._current
         self._status = "listening"
         self._current = None
@@ -395,6 +465,10 @@ class NowPlayingService:
         }
 
     def _promote(self, candidate: MatchCandidate, recorded_at: float | None = None) -> None:
+        # A different track was detected; the outgoing one finished if it had
+        # played nearly to its end (guards against early/overlapping matches).
+        if self._current is not None and self._current.track_id != candidate.track_id:
+            self._mark_finished(self._current, self._current_elapsed())
         self._current = candidate
         self._anchor_time = time.time()
         offset = candidate.offset_s or 0.0
@@ -420,6 +494,8 @@ class NowPlayingService:
             self._end_track()
 
     def _end_track(self) -> None:
+        # Reached full duration, so always >= the completion threshold.
+        self._mark_finished(self._current, self._current_elapsed())
         self._last_played = self._current
         self._current = None
         self._anchor_time = None
