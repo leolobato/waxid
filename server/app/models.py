@@ -56,6 +56,24 @@ class MatchCandidate(BaseModel):
     cover_url: str | None
 
 
+class FinishedTrack(BaseModel):
+    """A track that played through to (essentially) its end. Emitted once, on
+    the frame reporting the transition away from it, so clients can fire a
+    "track finished" notification without inferring completion from state."""
+    track_id: int
+    artist: str | None = None
+    album: str | None = None
+    album_id: int | None = None
+    track: str | None = None
+    track_number: int | None = None
+    side: str | None = None
+    position: str | None = None
+    year: int | None = None
+    tracks_on_side: int | None = None
+    is_last_on_side: bool | None = None
+    sides: dict[str, int] | None = None
+
+
 class NowPlayingResponse(BaseModel):
     status: Literal["playing", "listening", "idle", "starting"]
     track_id: int | None = None
@@ -75,6 +93,10 @@ class NowPlayingResponse(BaseModel):
     offset_s: float | None = None
     score: int | None = None
     confidence: float | None = None
+    tracks_on_side: int | None = None
+    is_last_on_side: bool | None = None
+    sides: dict[str, int] | None = None
+    finished_track: FinishedTrack | None = None
 
 
 class MatchResponse(BaseModel):

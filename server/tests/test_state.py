@@ -307,6 +307,202 @@ class TestSequentialWithEffectiveOrder:
             svc.shutdown()
 
 
+class TestSideProgress:
+    """get_state() surfaces how far the current track is through its side."""
+
+    # Side A has two tracks, side B has one.
+    _TRACKS = [
+        {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+        {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+        {"track_id": 3, "album_id": 10, "side": "B", "position": "B1", "track_number": 3},
+    ]
+
+    def _svc(self):
+        return NowPlayingService(get_tracks_for_album=lambda aid: self._TRACKS if aid == 10 else [])
+
+    def test_mid_side_track_is_not_last(self):
+        svc = self._svc()
+        try:
+            svc._promote(make_candidate(track_id=1, album_id=10, side="A", position="A1"))
+            state = svc.get_state()
+            assert state.tracks_on_side == 2
+            assert state.is_last_on_side is False
+            assert state.sides == {"A": 2, "B": 1}
+        finally:
+            svc.shutdown()
+
+    def test_last_track_on_side_is_flagged(self):
+        svc = self._svc()
+        try:
+            svc._promote(make_candidate(track_id=2, album_id=10, side="A", position="A2"))
+            state = svc.get_state()
+            assert state.tracks_on_side == 2
+            assert state.is_last_on_side is True
+            assert state.sides == {"A": 2, "B": 1}
+        finally:
+            svc.shutdown()
+
+    def test_sole_track_on_side_is_last(self):
+        svc = self._svc()
+        try:
+            svc._promote(make_candidate(track_id=3, album_id=10, side="B", position="B1"))
+            state = svc.get_state()
+            assert state.tracks_on_side == 1
+            assert state.is_last_on_side is True
+            assert state.sides == {"A": 2, "B": 1}
+        finally:
+            svc.shutdown()
+
+    def test_bonus_track_without_side_reports_none(self):
+        tracks = [{"track_id": 9, "album_id": 10, "side": None, "position": None, "track_number": 1}]
+        svc = NowPlayingService(get_tracks_for_album=lambda aid: tracks if aid == 10 else [])
+        try:
+            svc._promote(make_candidate(track_id=9, album_id=10, side=None, position=None))
+            state = svc.get_state()
+            assert state.tracks_on_side is None
+            assert state.is_last_on_side is None
+            assert state.sides is None
+        finally:
+            svc.shutdown()
+
+    def test_bonus_track_excluded_from_side_counts(self):
+        tracks = [
+            {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+            {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+            {"track_id": 9, "album_id": 10, "side": None, "position": None, "track_number": 3},
+        ]
+        svc = NowPlayingService(get_tracks_for_album=lambda aid: tracks if aid == 10 else [])
+        try:
+            svc._promote(make_candidate(track_id=2, album_id=10, side="A", position="A2"))
+            state = svc.get_state()
+            assert state.sides == {"A": 2}
+            assert state.tracks_on_side == 2
+            assert state.is_last_on_side is True
+        finally:
+            svc.shutdown()
+
+    def test_unknown_album_layout_reports_none(self):
+        svc = NowPlayingService()  # no track source -> empty layout
+        try:
+            svc._promote(make_candidate(track_id=1, album_id=10, side="A", position="A1"))
+            state = svc.get_state()
+            assert state.tracks_on_side is None
+            assert state.is_last_on_side is None
+            assert state.sides is None
+        finally:
+            svc.shutdown()
+
+
+class TestFinishedSignal:
+    """A one-shot finished_track is emitted only when a track plays through to
+    (essentially) its end — not on mid-track stops."""
+
+    _TRACKS = [
+        {"track_id": 1, "album_id": 10, "side": "A", "position": "A1", "track_number": 1},
+        {"track_id": 2, "album_id": 10, "side": "A", "position": "A2", "track_number": 2},
+    ]
+
+    def _svc(self):
+        return NowPlayingService(get_tracks_for_album=lambda aid: self._TRACKS if aid == 10 else [])
+
+    def _play(self, svc, track_id, duration_s=100.0, elapsed=0.0):
+        cand = make_candidate(
+            track_id=track_id, album_id=10, duration_s=duration_s,
+            side="A", position=f"A{track_id}",
+        )
+        svc._promote(cand)
+        svc._anchor_offset = elapsed
+        svc._anchor_time = time.time()
+        return cand
+
+    def test_natural_completion_reports_finished_track(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 2, duration_s=100.0, elapsed=100.0)
+            svc._check_track_ended()  # elapsed >= duration -> _end_track
+            state = svc.get_state()
+            assert state.status != "playing"
+            assert state.finished_track is not None
+            assert state.finished_track.track_id == 2
+            assert state.finished_track.is_last_on_side is True
+            assert state.finished_track.tracks_on_side == 2
+            assert state.finished_track.sides == {"A": 2}
+        finally:
+            svc.shutdown()
+
+    def test_drop_below_threshold_is_not_finished(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 1, duration_s=100.0, elapsed=50.0)
+            svc._drop_current()
+            assert svc.get_state().finished_track is None
+        finally:
+            svc.shutdown()
+
+    def test_drop_near_end_is_finished(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 2, duration_s=100.0, elapsed=95.0)
+            svc._drop_current()
+            ft = svc.get_state().finished_track
+            assert ft is not None and ft.track_id == 2
+        finally:
+            svc.shutdown()
+
+    def test_next_track_marks_previous_finished_when_near_end(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 1, duration_s=100.0, elapsed=95.0)
+            svc._promote(make_candidate(track_id=2, album_id=10, duration_s=100.0, side="A", position="A2"))
+            ft = svc.get_state().finished_track
+            assert ft is not None and ft.track_id == 1
+        finally:
+            svc.shutdown()
+
+    def test_next_track_does_not_mark_previous_when_early(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 1, duration_s=100.0, elapsed=20.0)
+            svc._promote(make_candidate(track_id=2, album_id=10, duration_s=100.0, side="A", position="A2"))
+            assert svc.get_state().finished_track is None
+        finally:
+            svc.shutdown()
+
+    def test_missing_duration_is_never_finished(self):
+        svc = self._svc()
+        try:
+            self._play(svc, 1, duration_s=None, elapsed=9999.0)
+            svc._drop_current()
+            assert svc.get_state().finished_track is None
+        finally:
+            svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_finished_track_delivered_once_over_sse(self):
+        svc = self._svc()
+        try:
+            received = []
+
+            async def listener():
+                async for update in svc.subscribe(timeout=1.0):
+                    if update is not None:
+                        received.append(update)
+                        break
+
+            task = asyncio.create_task(listener())
+            await asyncio.sleep(0.05)
+            self._play(svc, 2, duration_s=100.0, elapsed=100.0)
+            svc._check_track_ended()  # marks finished + status listening
+            await svc._notify()
+            await asyncio.wait_for(task, timeout=2.0)
+            assert received[0].finished_track is not None
+            assert received[0].finished_track.track_id == 2
+            # one-shot consumed: the next frame carries no finished_track
+            assert svc.get_state().finished_track is None
+        finally:
+            svc.shutdown()
+
+
 class TestAlbumLayout:
     def _layout_svc(self, tracks):
         """NowPlayingService wired to return the given tracks for album_id=10."""
