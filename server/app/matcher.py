@@ -176,10 +176,17 @@ def match_hashes(
     results = []
     for i, (track_id, (score, offset_frames)) in enumerate(sorted_tracks):
         confidence = None
-        if i == 0 and len(sorted_tracks) > 1:
-            second_score = sorted_tracks[1][1][0]
-            if second_score > 0:
-                confidence = score / second_score
+        if i == 0:
+            # Measure the leader against the best *organic* runner-up: a
+            # hint-injected track can ride along on a single vote, and dividing
+            # by that would inflate confidence toward the number of hints.
+            runner_up = next(
+                (s for tid2, (s, _o) in sorted_tracks[1:]
+                 if tid2 not in hint_set and s > 0),
+                None,
+            )
+            if runner_up:
+                confidence = score / runner_up
 
         track_info = db.get_track_with_album(track_id)
         if track_info is None:
