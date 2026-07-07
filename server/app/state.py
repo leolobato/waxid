@@ -361,13 +361,15 @@ class NowPlayingService:
 
         # Sequential shortcut: only when the current track is absent/weak,
         # so a strong current frame can't be stolen by a single cross-match.
-        top = candidates[0] if candidates else None
-        if (
-            top is not None
-            and top.score >= MIN_SEQUENTIAL_SCORE
-            and self._is_sequential_track(top)
-        ):
-            self._promote(top, recorded_at)
+        # Scan every candidate (not just rank 1) for the expected next track,
+        # so a lone cross-album match outscoring it by a vote during the
+        # between-track gap doesn't cost us the snappy transition.
+        seq_candidates = [
+            c for c in candidates
+            if c.score >= MIN_SEQUENTIAL_SCORE and self._is_sequential_track(c)
+        ]
+        if seq_candidates:
+            self._promote(max(seq_candidates, key=lambda c: c.score), recorded_at)
             return
 
         if self._status == "playing":
