@@ -56,7 +56,7 @@ python batch_inject.py export.csv --server http://localhost:8457
 
 Audio → resample to 11025 Hz → STFT (512 FFT, 256 hop) → high-pass filter (0.98 pole) → spectral peak detection → landmark pairing (fanout=3) → 22-bit hashes stored in SQLite.
 
-Matching uses offset voting: query hashes are looked up, time-offset histograms are built per track, and tracks exceeding `min_count=15` votes are returned ranked by score.
+Matching uses offset voting: query hashes are looked up, time-offset histograms are built per track, and tracks exceeding `min_count` (default 6) votes are returned ranked by score.
 
 Key tuning parameters are in `server/app/config.py` (`FingerprintConfig` dataclass).
 

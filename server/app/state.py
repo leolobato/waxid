@@ -4,9 +4,10 @@ import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Callable
 
+from .config import CONFIG
 from .models import FinishedTrack, MatchCandidate, NowPlayingResponse
 
-MIN_PROMOTE_SCORE = 6        # = matcher min_count; one bar for everyone
+MIN_PROMOTE_SCORE = CONFIG.min_count   # one promote bar for everyone, tied to the matcher
 MIN_SEQUENTIAL_SCORE = 4     # hinted sequential-next shortcut
 MIN_MAINTAIN_SCORE = 4
 CROSS_ALBUM_MARGIN = 1.5
