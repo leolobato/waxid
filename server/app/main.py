@@ -298,6 +298,10 @@ async def _ingest_single_file(
     hash_rows = [(h, track_id, t) for h, t in hashes]
     db.insert_hashes(hash_rows)
 
+    # A new track changes the album's side/track layout; drop the cache so
+    # expected-next hints and side progress reflect it without a restart.
+    now_playing.clear_album_cache(album_id)
+
     return {"track_id": track_id, "album_id": album_id, "album_created": created}
 
 
@@ -462,6 +466,8 @@ async def ingest(file: UploadFile = File(...), metadata: str = Form(...)):
     )
     db_hashes = [(h, track_id, t) for h, t in hashes]
     get_db().insert_hashes(db_hashes)
+    # Keep the album layout cache in step with the new track (see _ingest_single_file).
+    now_playing.clear_album_cache(meta.album_id)
     return IngestResponse(track_id=track_id, num_hashes=len(hashes), duration_s=meta.duration_s)
 
 
