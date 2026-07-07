@@ -122,6 +122,25 @@ async def _build_stoplist_background() -> None:
     await now_playing.notify_ready()
 
 
+_stoplist_rebuilding = False
+
+
+async def _rebuild_stoplist_background() -> None:
+    """Refresh the stoplist after new hashes land. Built once at startup, it
+    goes stale as a big ingest makes some hashes too common to be
+    discriminative; rebuild so those get filtered without a restart."""
+    global _stoplist, _stoplist_rebuilding
+    if _stoplist_rebuilding or CONFIG.max_hash_fanout <= 0 or db is None:
+        return
+    _stoplist_rebuilding = True
+    try:
+        _stoplist = await asyncio.to_thread(db.build_stoplist, CONFIG.max_hash_fanout)
+    except Exception:
+        logger.exception("Failed to rebuild stoplist")
+    finally:
+        _stoplist_rebuilding = False
+
+
 app = FastAPI(title="WaxID Server", lifespan=lifespan)
 
 now_playing = NowPlayingService(
@@ -609,6 +628,11 @@ async def ingest_bulk(files: list[UploadFile] = File(...)):
                     yield event({"type": "error", "file": filename, "error": str(e)})
                 finally:
                     os.unlink(tmp_path)
+
+        # A bulk ingest can push some hashes over the fanout limit; refresh the
+        # stoplist in the background so matching filters them without a restart.
+        if tracks_ingested:
+            asyncio.create_task(_rebuild_stoplist_background())
 
         yield event({
             "type": "done",
