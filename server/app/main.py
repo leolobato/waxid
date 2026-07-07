@@ -740,14 +740,21 @@ async def get_now_playing():
 @app.get("/now-playing/stream")
 async def now_playing_stream(request: Request):
     async def event_generator():
+        # The connection snapshot is a state reflection, not an event replay:
+        # strip any retained one-shot finished_track so a fresh client doesn't
+        # fire a "finished" notification for a track that ended before it
+        # connected. The per-subscriber stream below still delivers new ones.
+        def _snapshot() -> str:
+            state = now_playing.get_state().model_copy(update={"finished_track": None})
+            return f"data: {state.model_dump_json()}\n\n"
+
         if not _ready:
             starting = NowPlayingResponse(status="starting")
             yield f"data: {starting.model_dump_json()}\n\n"
             await now_playing.wait_ready()
-            yield f"data: {now_playing.get_state().model_dump_json()}\n\n"
+            yield _snapshot()
         else:
-            current = now_playing.get_state()
-            yield f"data: {current.model_dump_json()}\n\n"
+            yield _snapshot()
         async for update in now_playing.subscribe(timeout=30.0):
             if await request.is_disconnected():
                 break

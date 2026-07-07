@@ -478,27 +478,59 @@ class TestFinishedSignal:
             svc.shutdown()
 
     @pytest.mark.asyncio
-    async def test_finished_track_delivered_once_over_sse(self):
+    async def test_finished_track_delivered_to_every_subscriber(self):
+        """The race fix: a one-shot completion reaches each subscriber, not
+        just whichever waiter the condition happens to wake first."""
         svc = self._svc()
         try:
-            received = []
+            got_a: list = []
+            got_b: list = []
+
+            async def listener(sink):
+                async for update in svc.subscribe(timeout=1.0):
+                    if update is not None:
+                        sink.append(update)
+                        break
+
+            ta = asyncio.create_task(listener(got_a))
+            tb = asyncio.create_task(listener(got_b))
+            await asyncio.sleep(0.05)
+            self._play(svc, 2, duration_s=100.0, elapsed=100.0)
+            svc._check_track_ended()  # marks finished + status listening
+            await svc._notify()
+            await asyncio.wait_for(asyncio.gather(ta, tb), timeout=2.0)
+            assert got_a[0].finished_track is not None
+            assert got_a[0].finished_track.track_id == 2
+            assert got_b[0].finished_track is not None
+            assert got_b[0].finished_track.track_id == 2
+        finally:
+            svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_finished_track_not_repeated_to_same_subscriber(self):
+        """One-shot per subscriber: a later frame with no new completion does
+        not replay the same finished_track."""
+        svc = self._svc()
+        try:
+            received: list = []
 
             async def listener():
                 async for update in svc.subscribe(timeout=1.0):
                     if update is not None:
                         received.append(update)
-                        break
+                        if len(received) >= 2:
+                            break
 
             task = asyncio.create_task(listener())
             await asyncio.sleep(0.05)
             self._play(svc, 2, duration_s=100.0, elapsed=100.0)
-            svc._check_track_ended()  # marks finished + status listening
-            await svc._notify()
+            svc._check_track_ended()
+            await svc._notify()          # first update carries the completion
+            await asyncio.sleep(0.05)
+            await svc._notify()          # nothing new finished since
             await asyncio.wait_for(task, timeout=2.0)
             assert received[0].finished_track is not None
-            assert received[0].finished_track.track_id == 2
-            # one-shot consumed: the next frame carries no finished_track
-            assert svc.get_state().finished_track is None
+            assert received[1].finished_track is None
         finally:
             svc.shutdown()
 
