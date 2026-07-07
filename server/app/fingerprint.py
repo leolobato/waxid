@@ -40,8 +40,10 @@ def compute_spectrogram(audio: np.ndarray) -> np.ndarray:
     pole = CONFIG.hpf_pole
     b = np.array([1.0, -1.0])
     a = np.array([1.0, -pole])
-    for i in range(sgram.shape[0]):
-        sgram[i, :] = lfilter(b, a, sgram[i, :])
+    # Filter every frequency row along the time axis in one call. Rows are
+    # independent, so this matches the old per-row loop exactly; cast back to
+    # the input dtype so downstream peak comparisons stay bit-for-bit identical.
+    sgram = lfilter(b, a, sgram, axis=1).astype(sgram.dtype, copy=False)
     return sgram
 
 
@@ -59,20 +61,29 @@ def find_peaks(sgram: np.ndarray) -> list[tuple[int, int]]:
 
     peaks = []
     threshold = np.zeros(n_freq)
+    max_per_frame = CONFIG.max_peaks_per_frame
 
+    # The column loop stays sequential (the threshold decays across frames),
+    # but the per-bin local-maximum scan is vectorized. This is equivalent to
+    # the old inner loop: interior bins strictly greater than both neighbours
+    # and above the current threshold, then the strongest `max_per_frame` of
+    # them (ties broken by higher freq, matching the old reverse tuple sort).
     for col in range(n_frames):
         frame = sgram[:, col]
-        candidates = []
-        for i in range(1, n_freq - 1):
-            if frame[i] > frame[i - 1] and frame[i] > frame[i + 1]:
-                if frame[i] > threshold[i]:
-                    candidates.append((frame[i], i))
-        candidates.sort(reverse=True)
-        frame_peaks = []
-        for val, freq in candidates[:CONFIG.max_peaks_per_frame]:
-            frame_peaks.append((col, freq))
-            threshold[freq] = val
-        peaks.extend(frame_peaks)
+        interior = frame[1:-1]
+        is_peak = (
+            (interior > frame[:-2])
+            & (interior > frame[2:])
+            & (interior > threshold[1:-1])
+        )
+        freqs = np.nonzero(is_peak)[0] + 1
+        if freqs.size:
+            vals = frame[freqs]
+            order = np.lexsort((-freqs, -vals))[:max_per_frame]
+            for k in order:
+                freq = int(freqs[k])
+                peaks.append((col, freq))
+                threshold[freq] = vals[k]
         threshold *= a_dec
 
     if not peaks:
