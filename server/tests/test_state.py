@@ -174,6 +174,69 @@ class TestPositionClock:
             assert state.status == "listening"
 
 
+class TestAnchorResync:
+    """A confirming frame whose measured offset diverges from the predicted
+    elapsed re-syncs the playback clock (needle repositioning, speed drift)."""
+
+    @pytest.mark.asyncio
+    async def test_needle_reposition_resyncs_elapsed(self, service):
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            c = make_candidate(offset_s=30.0, duration_s=300.0)
+            await service.feed([c])
+            await service.feed([c])
+            assert service.get_state().elapsed_s == 30.0
+
+            # Needle dropped two minutes ahead: a solidly-voted confirming
+            # frame reports a far-away offset and the clock follows it.
+            await service.feed([make_candidate(offset_s=150.0, duration_s=300.0)])
+            state = service.get_state()
+            assert state.status == "playing"
+            assert state.elapsed_s == 150.0
+
+    @pytest.mark.asyncio
+    async def test_small_drift_does_not_move_anchor(self, service):
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            c = make_candidate(offset_s=30.0, duration_s=300.0)
+            await service.feed([c])
+            await service.feed([c])
+            # 3s off predicted, inside REANCHOR_THRESHOLD_S: not chased.
+            await service.feed([make_candidate(offset_s=33.0, duration_s=300.0)])
+            assert service.get_state().elapsed_s == 30.0
+
+    @pytest.mark.asyncio
+    async def test_weak_frame_cannot_yank_clock(self, service):
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            c = make_candidate(offset_s=30.0, duration_s=300.0)
+            await service.feed([c])
+            await service.feed([c])
+            # Below MIN_PROMOTE_SCORE: keeps the track alive (>= maintain
+            # bar) but is not trusted to move the clock.
+            await service.feed([make_candidate(offset_s=150.0, duration_s=300.0, score=5)])
+            state = service.get_state()
+            assert state.status == "playing"
+            assert state.elapsed_s == 30.0
+
+    @pytest.mark.asyncio
+    async def test_backward_reposition_prevents_premature_end(self, service):
+        """Moving the needle back near the start must stop the stale clock
+        from firing track-end at the originally predicted time."""
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            c = make_candidate(offset_s=170.0, duration_s=180.0)
+            await service.feed([c])
+            await service.feed([c])
+            assert service.get_state().status == "playing"
+
+            await service.feed([make_candidate(offset_s=10.0, duration_s=180.0)])
+            mock_time.time.return_value = 1020.0  # stale clock would read 190s
+            state = service.get_state()
+            assert state.status == "playing"
+            assert state.elapsed_s == 30.0
+
+
 class TestIdleTimer:
     @pytest.mark.asyncio
     async def test_idle_after_timeout(self, service, monkeypatch):

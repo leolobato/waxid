@@ -10,6 +10,7 @@ MIN_PROMOTE_SCORE = 6        # = matcher min_count; one bar for everyone
 MIN_SEQUENTIAL_SCORE = 4     # hinted sequential-next shortcut
 MIN_MAINTAIN_SCORE = 4
 CROSS_ALBUM_MARGIN = 1.5
+REANCHOR_THRESHOLD_S = 5.0   # re-sync the playback clock if measured offset drifts past this
 BUFFER_SIZE = 3
 REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
@@ -339,6 +340,13 @@ class NowPlayingService:
         if current_alive:
             self._miss_count = 0
 
+        # Re-sync the playback clock when the current track confirms this frame.
+        # The initial anchor is set once at promotion; without this, needle
+        # repositioning within a track and turntable speed drift would leave
+        # elapsed_s wrong and could fire track-end detection early.
+        if self._status == "playing" and cur_match is not None:
+            self._maybe_reanchor(cur_match, recorded_at)
+
         winner = self._stable_winner()
         if winner is not None:
             if self._current is not None and winner.track_id == self._current.track_id:
@@ -483,17 +491,35 @@ class NowPlayingService:
         if self._current is not None and self._current.track_id != candidate.track_id:
             self._mark_finished(self._current, self._current_elapsed())
         self._current = candidate
-        self._anchor_time = time.time()
-        offset = candidate.offset_s or 0.0
-        if recorded_at is not None:
-            # Compensate for pipeline delay: the audio was captured at
-            # recorded_at, so it's (now - recorded_at) seconds old.
-            offset += time.time() - recorded_at
-        self._anchor_offset = offset
+        self._set_anchor(candidate.offset_s, recorded_at)
         self._status = "playing"
         self._miss_count = 0
         self._no_evidence_streak = 0
         self._buffer.clear()
+
+    def _set_anchor(self, offset_s: float | None, recorded_at: float | None) -> None:
+        """Anchor the playback clock to a measured offset. Compensates for
+        pipeline delay: the audio was captured at recorded_at, so it is
+        (now - recorded_at) seconds old by the time we anchor."""
+        now = time.time()
+        offset = offset_s or 0.0
+        if recorded_at is not None:
+            offset += now - recorded_at
+        self._anchor_time = now
+        self._anchor_offset = offset
+
+    def _maybe_reanchor(self, cur_match: MatchCandidate, recorded_at: float | None) -> None:
+        """Re-sync the anchor when a confirming frame's measured offset diverges
+        from the predicted elapsed by more than REANCHOR_THRESHOLD_S. Only a
+        solidly-voted frame is trusted, so match noise can't yank the clock."""
+        if self._anchor_time is None or self._anchor_offset is None:
+            return
+        if cur_match.score < MIN_PROMOTE_SCORE:
+            return
+        ref_time = recorded_at if recorded_at is not None else time.time()
+        predicted = self._anchor_offset + (ref_time - self._anchor_time)
+        if abs(cur_match.offset_s - predicted) > REANCHOR_THRESHOLD_S:
+            self._set_anchor(cur_match.offset_s, recorded_at)
 
     def _check_track_ended(self) -> None:
         if self._status != "playing" or self._current is None:
