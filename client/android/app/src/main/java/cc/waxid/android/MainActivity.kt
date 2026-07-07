@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
     private val autoStartListening = MutableStateFlow(true)
     private val remoteControlEnabled = MutableStateFlow(true)
     private val keepScreenOn = MutableStateFlow(false)
+    private val downsampleAudio = MutableStateFlow(true)
 
     private var controlListeningJob: Job? = null
 
@@ -92,6 +93,7 @@ class MainActivity : ComponentActivity() {
         autoStartListening.value = prefs.getBoolean("auto_start_listening", true)
         remoteControlEnabled.value = prefs.getBoolean("remote_control_enabled", true)
         keepScreenOn.value = prefs.getBoolean("keep_screen_on", false)
+        downsampleAudio.value = prefs.getBoolean("downsample_audio", true)
 
         updateKeepScreenOn(keepScreenOn.value)
 
@@ -120,6 +122,7 @@ class MainActivity : ComponentActivity() {
                 val autoStart by autoStartListening.collectAsStateWithLifecycle()
                 val remoteControl by remoteControlEnabled.collectAsStateWithLifecycle()
                 val screenOn by keepScreenOn.collectAsStateWithLifecycle()
+                val downsample by downsampleAudio.collectAsStateWithLifecycle()
 
                 WebViewScreen(
                     serverUrl = serverUrlValue,
@@ -128,6 +131,7 @@ class MainActivity : ComponentActivity() {
                     autoStartListening = autoStart,
                     remoteControlEnabled = remoteControl,
                     keepScreenOn = screenOn,
+                    downsampleAudio = downsample,
                     onConnect = { url ->
                         serverUrl.value = url
                         Config.saveServerUrl(this@MainActivity, url)
@@ -161,6 +165,16 @@ class MainActivity : ComponentActivity() {
                         keepScreenOn.value = value
                         savePref("keep_screen_on", value)
                         updateKeepScreenOn(value)
+                    },
+                    onDownsampleAudioChange = { value ->
+                        downsampleAudio.value = value
+                        savePref("downsample_audio", value)
+                        // Capture rate is fixed at start(); restart so the
+                        // change takes effect immediately.
+                        if (isListening.value) {
+                            stopListening()
+                            startListening()
+                        }
                     },
                 )
             }

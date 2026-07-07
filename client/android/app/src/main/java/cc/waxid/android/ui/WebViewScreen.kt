@@ -46,6 +46,7 @@ fun WebViewScreen(
     autoStartListening: Boolean,
     remoteControlEnabled: Boolean,
     keepScreenOn: Boolean,
+    downsampleAudio: Boolean,
     onConnect: (String) -> Unit,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
@@ -53,6 +54,7 @@ fun WebViewScreen(
     onAutoStartListeningChange: (Boolean) -> Unit,
     onRemoteControlChange: (Boolean) -> Unit,
     onKeepScreenOnChange: (Boolean) -> Unit,
+    onDownsampleAudioChange: (Boolean) -> Unit,
 ) {
     if (!isConfigured) {
         SetupScreen(onConnect = onConnect)
@@ -219,9 +221,11 @@ fun WebViewScreen(
                     autoStartListening = autoStartListening,
                     remoteControlEnabled = remoteControlEnabled,
                     keepScreenOn = keepScreenOn,
+                    downsampleAudio = downsampleAudio,
                     onAutoStartListeningChange = onAutoStartListeningChange,
                     onRemoteControlChange = onRemoteControlChange,
                     onKeepScreenOnChange = onKeepScreenOnChange,
+                    onDownsampleAudioChange = onDownsampleAudioChange,
                     onLogout = {
                         showSettingsSheet = false
                         onLogout()
@@ -237,9 +241,11 @@ private fun SettingsPanel(
     autoStartListening: Boolean,
     remoteControlEnabled: Boolean,
     keepScreenOn: Boolean,
+    downsampleAudio: Boolean,
     onAutoStartListeningChange: (Boolean) -> Unit,
     onRemoteControlChange: (Boolean) -> Unit,
     onKeepScreenOnChange: (Boolean) -> Unit,
+    onDownsampleAudioChange: (Boolean) -> Unit,
     onLogout: () -> Unit,
 ) {
     Column(
@@ -299,6 +305,21 @@ private fun SettingsPanel(
                 )
             }
             Switch(checked = keepScreenOn, onCheckedChange = onKeepScreenOnChange)
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Downsample audio", fontSize = 15.sp)
+                Text(
+                    "Send 11 kHz audio — lighter on server CPU and network",
+                    fontSize = 12.sp,
+                    color = Color(0xFF888888),
+                )
+            }
+            Switch(checked = downsampleAudio, onCheckedChange = onDownsampleAudioChange)
         }
 
         HorizontalDivider(
