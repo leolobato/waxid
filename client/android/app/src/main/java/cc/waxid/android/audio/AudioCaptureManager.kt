@@ -46,7 +46,14 @@ object WavHelper {
 
 class AudioCaptureManager {
     val bufferDurationS = 10.0
-    private var sampleRate = 44100
+
+    /** When true, capture at 44.1 kHz and decimate x4 on-device so the server
+     * receives audio already at its 11025 Hz fingerprint rate: ~4x smaller
+     * payloads and no server-side resample. Read once at start(). */
+    var downsampleTo11k: Boolean = false
+
+    private var sampleRate = 44100  // rate of the buffered/exported samples
+    private var decimator: Decimator? = null
     private var circularBuffer = ShortArray(0)
     private var writeIndex = 0
     private var samplesWritten = 0
@@ -65,10 +72,22 @@ class AudioCaptureManager {
     fun start() {
         if (_isCapturing.value) return
 
-        val nativeRate = android.media.AudioTrack.getNativeOutputSampleRate(
-            android.media.AudioManager.STREAM_MUSIC
-        )
-        sampleRate = if (nativeRate > 0) nativeRate else 44100
+        val captureRate: Int
+        if (downsampleTo11k) {
+            // 44100 Hz capture is guaranteed on every device and divides
+            // cleanly by 4; a non-integer ratio (e.g. from a 48 kHz native
+            // rate) would need a full resampler instead of a decimator.
+            captureRate = TARGET_SAMPLE_RATE * DOWNSAMPLE_FACTOR
+            sampleRate = TARGET_SAMPLE_RATE
+            decimator = Decimator.forFactor(DOWNSAMPLE_FACTOR)
+        } else {
+            val nativeRate = android.media.AudioTrack.getNativeOutputSampleRate(
+                android.media.AudioManager.STREAM_MUSIC
+            )
+            captureRate = if (nativeRate > 0) nativeRate else 44100
+            sampleRate = captureRate
+            decimator = null
+        }
         val bufferSize = (sampleRate * bufferDurationS).toInt()
         circularBuffer = ShortArray(bufferSize)
         writeIndex = 0
@@ -76,14 +95,14 @@ class AudioCaptureManager {
         _bufferReady.value = false
 
         val minBufferSize = AudioRecord.getMinBufferSize(
-            sampleRate,
+            captureRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
 
         audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
-            sampleRate,
+            captureRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             minBufferSize * 2
@@ -91,7 +110,11 @@ class AudioCaptureManager {
 
         audioRecord?.startRecording()
         _isCapturing.value = true
-        Log.i("AudioCapture", "Started recording at ${sampleRate}Hz, state=${audioRecord?.recordingState}")
+        Log.i(
+            "AudioCapture",
+            "Started recording at ${captureRate}Hz (buffering at ${sampleRate}Hz), " +
+                "state=${audioRecord?.recordingState}"
+        )
 
         recordingThread = Thread {
             val readBuffer = ShortArray(4096)
@@ -99,7 +122,13 @@ class AudioCaptureManager {
             while (_isCapturing.value) {
                 val read = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: -1
                 if (read > 0) {
-                    appendSamples(readBuffer, read)
+                    val dec = decimator
+                    if (dec != null) {
+                        val downsampled = dec.process(readBuffer, read)
+                        if (downsampled.isNotEmpty()) appendSamples(downsampled, downsampled.size)
+                    } else {
+                        appendSamples(readBuffer, read)
+                    }
                     logCounter++
                     if (logCounter % 100 == 0) {
                         Log.i("AudioCapture", "Still recording: samplesWritten=$samplesWritten, bufferReady=${_bufferReady.value}")
@@ -154,5 +183,10 @@ class AudioCaptureManager {
         }
 
         return header + pcmData.array()
+    }
+
+    companion object {
+        const val TARGET_SAMPLE_RATE = 11025  // the server's fingerprint rate
+        const val DOWNSAMPLE_FACTOR = 4
     }
 }

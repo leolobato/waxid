@@ -94,7 +94,7 @@ The now-playing view connects to `/now-playing/stream` (SSE) for real-time updat
 Jetpack Compose app, no XML layouts. Two states: unconfigured (setup screen with server URL input) and configured (full-screen WebView showing the server's web UI).
 
 **Services:**
-- `ListeningService` — Foreground service that captures audio via `AudioCaptureManager` (10-second circular buffer, mono 16-bit PCM). `MatchClient` sends WAV chunks to `/listen` every 3 seconds.
+- `ListeningService` — Foreground service that captures audio via `AudioCaptureManager` (10-second circular buffer, mono 16-bit PCM). By default audio is captured at 44.1 kHz and decimated on-device to 11025 Hz (`Decimator`, FIR anti-alias + ÷4) so the server skips resampling; a settings toggle (`downsample_audio`) reverts to sending native-rate audio. `MatchClient` sends WAV chunks to `/listen` every 3 seconds.
 - `ControlService` — Local Ktor HTTP server on port 8458 with `POST /start`, `POST /stop`, `GET /status` for remote control.
 
 **WebView bridge:** The WebView injects a `WaxID` JavaScript interface with `startListening()`, `stopListening()`, `openSettings()`, `isListening()` methods. Custom user agent includes `WaxID-Android/1.0`.

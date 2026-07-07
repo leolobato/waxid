@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
+import androidx.preference.PreferenceManager
 import cc.waxid.android.audio.AudioCaptureManager
 import cc.waxid.android.matching.LogEntry
 import cc.waxid.android.matching.MatchClient
@@ -45,6 +46,9 @@ class ListeningService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
         startForeground(NOTIFICATION_ID, buildNotification())
+        audioCaptureManager.downsampleTo11k = PreferenceManager
+            .getDefaultSharedPreferences(this)
+            .getBoolean("downsample_audio", true)
         audioCaptureManager.start()
         matchClient.start(scope)
         return START_STICKY
