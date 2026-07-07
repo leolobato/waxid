@@ -216,7 +216,7 @@ class Database:
         # Stream rows into a flat array to avoid Python tuple overhead
         cur = self.conn.cursor()
         cur.row_factory = None
-        flat = array("q")  # unsigned long long, 8 bytes — matches int64
+        flat = array("q")  # signed long long, 8 bytes — matches int64
         try:
             for i in range(0, len(hash_values), batch_size):
                 batch = hash_values[i:i + batch_size]
