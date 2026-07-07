@@ -74,7 +74,10 @@ class NowPlayingService:
         self._miss_count: int = 0
         self._album_layout_cache: dict[int, AlbumLayout] = {}
         self._no_evidence_streak: int = 0
-        self._finished: FinishedTrack | None = None  # one-shot: track that just played through
+        # Latest completed track, retained and stamped with a monotonic sequence
+        # so each subscriber can receive it exactly once (see subscribe()).
+        self._finished: FinishedTrack | None = None
+        self._finished_seq: int = 0
 
     async def notify_ready(self) -> None:
         """Signal that the server is ready, waking any SSE clients waiting for startup."""
@@ -164,6 +167,7 @@ class NowPlayingService:
             return
         if elapsed >= candidate.duration_s * COMPLETION_MIN_FRACTION:
             self._finished = self._build_finished(candidate)
+            self._finished_seq += 1
 
     def _build_finished(self, candidate: MatchCandidate) -> FinishedTrack:
         tracks_on_side, is_last_on_side, sides = self._side_progress(candidate)
@@ -207,13 +211,22 @@ class NowPlayingService:
         return sides[cur_entry.side], is_last, sides
 
     async def subscribe(self, timeout: float = 30.0) -> AsyncGenerator[NowPlayingResponse | None, None]:
+        # Each subscriber tracks the finished-track sequence it has already
+        # delivered, so a one-shot completion reaches every subscriber (SSE,
+        # Roon, Last.fm) exactly once instead of being consumed by whichever
+        # waiter the condition happens to wake first. Start at the current
+        # sequence so a subscriber never replays a completion from before it
+        # connected.
+        seen_finished_seq = self._finished_seq
         while True:
             try:
                 async with self._condition:
                     await asyncio.wait_for(self._condition.wait(), timeout=timeout)
                 state = self.get_state()
-                # One-shot: a finished track is delivered on a single frame.
-                self._finished = None
+                if self._finished_seq != seen_finished_seq:
+                    seen_finished_seq = self._finished_seq
+                elif state.finished_track is not None:
+                    state = state.model_copy(update={"finished_track": None})
                 yield state
             except asyncio.TimeoutError:
                 yield None
