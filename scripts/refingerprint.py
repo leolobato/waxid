@@ -211,6 +211,7 @@ def main():
             # the existing row; omit side/position so curated values survive.
             payload = {
                 "album_id": album_id,
+                "track_id": db_track["track_id"],
                 "artist": db_track["artist"],
                 "album": db_track["album"],
                 "track": db_track["track"],
