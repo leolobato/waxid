@@ -158,6 +158,20 @@ class Database:
         ).fetchone()
         return dict(row) if row else None
 
+    def find_track(self, album_id: int, track: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM tracks WHERE album_id = ? AND track = ?",
+            (album_id, track),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def replace_hashes_for_track(self, track_id: int, hashes: list[tuple[int, int, int]]):
+        self.conn.execute("DELETE FROM hashes WHERE track_id = ?", (track_id,))
+        self.conn.executemany(
+            "INSERT INTO hashes (hash, track_id, t_frame) VALUES (?, ?, ?)", hashes,
+        )
+        self.conn.commit()
+
     def insert_track(self, album_id: int, artist: str, album: str, track: str,
                      track_number: int | None = None, year: int | None = None,
                      duration_s: float | None = None, source_path: str | None = None,

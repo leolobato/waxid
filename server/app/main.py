@@ -300,22 +300,28 @@ async def _ingest_single_file(
 
     hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
 
-    # Insert track
-    track_id = db.insert_track(
-        album_id=album_id,
-        artist=tags.get("artist") or artist,
-        album=album_name,
-        track=track_name,
-        track_number=tags.get("track_number"),
-        year=tags.get("year"),
-        duration_s=tags.get("duration_s"),
-        side=side,
-        position=position,
-    )
-
-    # Insert hashes
-    hash_rows = [(h, track_id, t) for h, t in hashes]
-    db.insert_hashes(hash_rows)
+    # Re-ingesting an existing track (same album + track name) replaces its
+    # fingerprints in place, keeping curated metadata (side/position/Discogs)
+    # — this is how the library is re-fingerprinted after algorithm changes.
+    existing = db.find_track(album_id, track_name)
+    if existing:
+        track_id = existing["track_id"]
+        db.update_track(track_id, track_number=tags.get("track_number"),
+                        duration_s=tags.get("duration_s"))
+        db.replace_hashes_for_track(track_id, [(h, track_id, t) for h, t in hashes])
+    else:
+        track_id = db.insert_track(
+            album_id=album_id,
+            artist=tags.get("artist") or artist,
+            album=album_name,
+            track=track_name,
+            track_number=tags.get("track_number"),
+            year=tags.get("year"),
+            duration_s=tags.get("duration_s"),
+            side=side,
+            position=position,
+        )
+        db.insert_hashes([(h, track_id, t) for h, t in hashes])
 
     # A new track changes the album's side/track layout; drop the cache so
     # expected-next hints and side progress reflect it without a restart.
@@ -478,13 +484,23 @@ async def ingest(file: UploadFile = File(...), metadata: str = Form(...)):
     meta = TrackMetadata(**json.loads(metadata))
     audio_bytes = await file.read()
     hashes = fingerprint_audio(audio_bytes)
-    track_id = get_db().insert_track(
-        album_id=meta.album_id, artist=meta.artist, album=meta.album, track=meta.track,
-        track_number=meta.track_number, year=meta.year, duration_s=meta.duration_s,
-        side=meta.side, position=meta.position,
-    )
-    db_hashes = [(h, track_id, t) for h, t in hashes]
-    get_db().insert_hashes(db_hashes)
+    db = get_db()
+    # Re-ingesting an existing track (same album + track name) replaces its
+    # fingerprints and refreshes any provided metadata instead of inserting a
+    # duplicate — re-running ingest.py re-fingerprints the library in place.
+    existing = db.find_track(meta.album_id, meta.track)
+    if existing:
+        track_id = existing["track_id"]
+        db.update_track(track_id, track_number=meta.track_number, year=meta.year,
+                        duration_s=meta.duration_s, side=meta.side, position=meta.position)
+        db.replace_hashes_for_track(track_id, [(h, track_id, t) for h, t in hashes])
+    else:
+        track_id = db.insert_track(
+            album_id=meta.album_id, artist=meta.artist, album=meta.album, track=meta.track,
+            track_number=meta.track_number, year=meta.year, duration_s=meta.duration_s,
+            side=meta.side, position=meta.position,
+        )
+        db.insert_hashes([(h, track_id, t) for h, t in hashes])
     # Keep the album layout cache in step with the new track (see _ingest_single_file).
     now_playing.clear_album_cache(meta.album_id)
     return IngestResponse(track_id=track_id, num_hashes=len(hashes), duration_s=meta.duration_s)
