@@ -60,14 +60,40 @@ def find_peaks(sgram: np.ndarray) -> list[tuple[int, int]]:
     a_dec = max(0.5, min(a_dec, 0.9999))
 
     peaks = []
-    threshold = np.zeros(n_freq)
     max_per_frame = CONFIG.max_peaks_per_frame
 
+    # Accepted peaks raise the threshold in a Gaussian neighbourhood, not just
+    # their own bin (audfprint's "spreading"). Two local maxima a few bins
+    # apart would otherwise both survive and emit near-duplicate landmarks,
+    # bloating the hash table with collision noise. The kernel is wide and
+    # flat near the top (multiplicative on log magnitudes), so only peaks
+    # clearly stronger than their neighbourhood get through.
+    sd = CONFIG.spread_sd
+    spread_radius = int(np.ceil(2.5 * sd))
+    spread_kernel = np.exp(-0.5 * (np.arange(-spread_radius, spread_radius + 1) / sd) ** 2)
+
+    def spread_into(vector: np.ndarray, freq: int, val: float) -> None:
+        lo = max(0, freq - spread_radius)
+        hi = min(n_freq, freq + spread_radius + 1)
+        np.maximum(
+            vector[lo:hi],
+            val * spread_kernel[lo - freq + spread_radius:hi - freq + spread_radius],
+            out=vector[lo:hi],
+        )
+
+    # Seed the threshold from the first ~10 frames (audfprint's warm-up) so
+    # the start of every chunk doesn't spray junk peaks before the decaying
+    # threshold has anything to decay from.
+    threshold = np.zeros(n_freq)
+    init_max = sgram[:, : min(10, n_frames)].max(axis=1)
+    for freq in np.nonzero(init_max > 0)[0]:
+        spread_into(threshold, int(freq), init_max[freq])
+
     # The column loop stays sequential (the threshold decays across frames),
-    # but the per-bin local-maximum scan is vectorized. This is equivalent to
-    # the old inner loop: interior bins strictly greater than both neighbours
-    # and above the current threshold, then the strongest `max_per_frame` of
-    # them (ties broken by higher freq, matching the old reverse tuple sort).
+    # but the per-bin local-maximum scan is vectorized: interior bins strictly
+    # greater than both neighbours and above the current threshold. Candidates
+    # are then accepted strongest-first (ties broken by higher freq), each
+    # re-checked against the threshold its stronger neighbours just raised.
     for col in range(n_frames):
         frame = sgram[:, col]
         interior = frame[1:-1]
@@ -79,17 +105,27 @@ def find_peaks(sgram: np.ndarray) -> list[tuple[int, int]]:
         freqs = np.nonzero(is_peak)[0] + 1
         if freqs.size:
             vals = frame[freqs]
-            order = np.lexsort((-freqs, -vals))[:max_per_frame]
+            order = np.lexsort((-freqs, -vals))
+            accepted = 0
             for k in order:
+                if accepted >= max_per_frame:
+                    break
                 freq = int(freqs[k])
+                val = vals[k]
+                if val <= threshold[freq]:
+                    continue  # suppressed by a stronger neighbour this frame
                 peaks.append((col, freq))
-                threshold[freq] = vals[k]
+                accepted += 1
+                spread_into(threshold, freq, val)
         threshold *= a_dec
 
     if not peaks:
         return peaks
 
     peaks.sort(key=lambda p: (p[0], p[1]))
+    # "1.5x stronger" on log magnitudes is an additive margin; multiplying the
+    # log value would set a far harsher bar for strong peaks than weak ones.
+    prune_margin = np.log(1.5)
     pruned = []
     for i, (col, freq) in enumerate(peaks):
         val = sgram[freq, col]
@@ -98,7 +134,7 @@ def find_peaks(sgram: np.ndarray) -> list[tuple[int, int]]:
             col2, freq2 = peaks[j]
             if col2 > col + 5:
                 break
-            if abs(freq2 - freq) <= 3 and sgram[freq2, col2] > val * 1.5:
+            if abs(freq2 - freq) <= 3 and sgram[freq2, col2] > val + prune_margin:
                 keep = False
                 break
         if keep:
