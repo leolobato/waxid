@@ -11,6 +11,35 @@ breaks `finished_track`), two functional gaps (no anchor re-sync, a cache
 invalidation hole), and several concrete wins for match quality and resource
 usage.
 
+## Status (2026-07-08, branch `fix/review-findings`)
+
+Everything below is addressed except the two deliberately-skipped items:
+
+- Bug 1 `finished_track` race — fixed (71cc4dc, per-subscriber sequence numbers)
+- Bug 2 anchor re-sync — fixed (8f7b363, re-anchor on diverging confirming frames)
+- Bug 3 ingest cache invalidation — fixed (bdd72c1)
+- Doc/coupling nits — fixed (f970b97)
+- Threshold spreading — done (3420af4), audfprint-faithful: Gaussian SD 30 bins
+  plus warm-up seeding from the first ~10 frames. Hash density on a music-like
+  test signal dropped ~13x (623 → 48 hashes/sec), landing at the audfprint
+  design target. **Requires re-ingesting the library** — old stored hashes no
+  longer match new query fingerprints.
+- Multiplicative prune margin — fixed in the same commit (`val + log(1.5)`).
+- Redundant fingerprinting (10s window every 3s) — **open**, client-side trim
+  to ~8s still available if server CPU matters.
+- Client native-rate audio — done (d7f3447, on-device decimation to 11025 Hz)
+- `find_peaks`/`lfilter` vectorization — done (03ae8c0)
+- Stale stoplist — done (6fcb349, background rebuild after bulk ingest)
+- In-RAM hash index — **skipped** on purpose; revisit only if match latency
+  becomes a problem (less likely now that the hash table is ~13x smaller).
+- Sequential shortcut rank — done (7a78c77)
+- Hint-inflated confidence — done (8e71577)
+
+Re-ingestion support: `POST /ingest` and bulk ingest are now idempotent —
+re-ingesting an existing track (same album + track name) replaces its hashes
+in place and preserves curated metadata, so re-running `ingest.py` over the
+collection re-fingerprints the library.
+
 ## Bugs
 
 ### 1. `finished_track` is consumed by the wrong subscriber (race)

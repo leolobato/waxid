@@ -47,14 +47,15 @@ SwiftUI, macOS 14.0+. Largely superseded by the Android client.
 ```bash
 cd scripts
 python ingest.py /path/to/album --server http://localhost:8457
-python batch_inject.py export.csv --server http://localhost:8457
 ```
 
 ## Architecture
 
 ### Audio Fingerprinting Pipeline
 
-Audio → resample to 11025 Hz → STFT (512 FFT, 256 hop) → high-pass filter (0.98 pole) → spectral peak detection → landmark pairing (fanout=3) → 22-bit hashes stored in SQLite.
+Audio → resample to 11025 Hz → STFT (512 FFT, 256 hop) → high-pass filter (0.98 pole) → spectral peak detection with Gaussian threshold spreading → landmark pairing (fanout=3) → 22-bit hashes stored in SQLite.
+
+Re-ingesting an existing track (same album + track name) replaces its hashes in place, so re-running `ingest.py` re-fingerprints the library after algorithm changes.
 
 Matching uses offset voting: query hashes are looked up, time-offset histograms are built per track, and tracks exceeding `min_count` (default 6) votes are returned ranked by score.
 
