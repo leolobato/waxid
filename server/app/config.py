@@ -9,6 +9,7 @@ class FingerprintConfig:
     hpf_pole: float = 0.98
     target_density: float = 20.0
     max_peaks_per_frame: int = 5
+    spread_sd: float = 30.0  # Gaussian SD (freq bins) for threshold spreading (audfprint f_sd)
     fanout: int = 3
     min_dt: int = 2
     max_dt: int = 63

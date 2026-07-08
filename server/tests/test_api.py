@@ -22,10 +22,20 @@ def client(tmp_path, monkeypatch):
 
 
 def _make_wav(duration=5.0, sr=44100, freq=440.0) -> bytes:
+    """Music-like test signal: a sequence of decaying notes derived from
+    `freq`. A pure sustained tone won't fingerprint — the onset-emphasis
+    high-pass leaves nothing after the first frames — so give it onsets."""
     t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    audio = np.sin(2 * np.pi * freq * t).astype(np.float32)
+    audio = np.zeros_like(t, dtype=np.float64)
+    note_len = 0.25
+    n_notes = int(duration / note_len)
+    for i in range(n_notes):
+        start = int(i * note_len * sr)
+        seg = t[start:start + int(note_len * sr)] - t[start]
+        note_freq = freq * (1 + (i % 5) * 0.25)  # cycle a small arpeggio
+        audio[start:start + len(seg)] = np.sin(2 * np.pi * note_freq * seg) * np.exp(-seg / 0.1)
     buf = io.BytesIO()
-    sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
+    sf.write(buf, audio.astype(np.float32), sr, format="WAV", subtype="PCM_16")
     return buf.getvalue()
 
 
