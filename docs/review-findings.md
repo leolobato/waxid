@@ -13,36 +13,21 @@ usage.
 
 ## Status (2026-07-08, branch `fix/review-findings`)
 
-Everything below is addressed except the two deliberately-skipped items:
+Every finding is resolved (see the per-item annotations below) except two left
+open on purpose: the client's 10s-every-3s listen window (a ~20% server CPU
+trim if it ever matters) and the in-RAM hash index (revisit only if match
+latency becomes a problem — less likely now that the hash table is ~13x
+smaller).
 
-- Bug 1 `finished_track` race — fixed (71cc4dc, per-subscriber sequence numbers)
-- Bug 2 anchor re-sync — fixed (8f7b363, re-anchor on diverging confirming frames)
-- Bug 3 ingest cache invalidation — fixed (bdd72c1)
-- Doc/coupling nits — fixed (f970b97)
-- Threshold spreading — done (3420af4), audfprint-faithful: Gaussian SD 30 bins
-  plus warm-up seeding from the first ~10 frames. Hash density on a music-like
-  test signal dropped ~13x (623 → 48 hashes/sec), landing at the audfprint
-  design target. **Requires re-ingesting the library** — old stored hashes no
-  longer match new query fingerprints.
-- Multiplicative prune margin — fixed in the same commit (`val + log(1.5)`).
-- Redundant fingerprinting (10s window every 3s) — **open**, client-side trim
-  to ~8s still available if server CPU matters.
-- Client native-rate audio — done (d7f3447, on-device decimation to 11025 Hz)
-- `find_peaks`/`lfilter` vectorization — done (03ae8c0)
-- Stale stoplist — done (6fcb349, background rebuild after bulk ingest)
-- In-RAM hash index — **skipped** on purpose; revisit only if match latency
-  becomes a problem (less likely now that the hash table is ~13x smaller).
-- Sequential shortcut rank — done (7a78c77)
-- Hint-inflated confidence — done (8e71577)
-
-Re-ingestion support: `POST /ingest` and bulk ingest are now idempotent —
-re-ingesting an existing track (same album + track name) replaces its hashes
-in place and preserves curated metadata, so re-running `ingest.py` over the
-collection re-fingerprints the library.
+The fingerprint changes invalidate stored hashes: **the library must be
+re-ingested**. To support that, `POST /ingest` and bulk ingest are now
+idempotent (f38382f) — re-ingesting an existing track (same album + track
+name) replaces its hashes in place and preserves curated metadata, so
+re-running `ingest.py` over the collection re-fingerprints the library.
 
 ## Bugs
 
-### 1. `finished_track` is consumed by the wrong subscriber (race)
+### 1. `finished_track` is consumed by the wrong subscriber (race) — ✅ fixed (71cc4dc)
 
 `subscribe()` clears `self._finished = None` right after `get_state()`
 (`server/app/state.py:216`). The Roon notifier and Last.fm scrobbler are *also*
@@ -56,11 +41,11 @@ but the v1.4.0 "report track completion" feature is effectively broken the
 moment Roon or Last.fm is enabled. Inconsistently, polling `GET /now-playing`
 returns the field repeatedly *without* clearing it.
 
-**Fix:** per-subscriber delivery — a monotonic sequence number each subscriber
-tracks, or per-subscriber queues — instead of a shared field cleared by the
-first reader.
+**Fixed:** per-subscriber delivery via a monotonic sequence number
+(`_finished_seq`) that each subscriber tracks; the shared field is no longer
+cleared by the first reader.
 
-### 2. Playback anchor is never re-synced
+### 2. Playback anchor is never re-synced — ✅ fixed (8f7b363)
 
 `_promote` sets `_anchor_time`/`_anchor_offset` once; after that, when the
 stable winner *is* the current track, `_advance` returns immediately
@@ -77,11 +62,11 @@ Consequences:
   scrobbler dedupes via `_last_scrobbled_track_id`), but `finished_track`
   consumers would double-count.
 
-**Fix:** when the current track confirms with a decent score, compare the
-measured `offset_s` against the predicted elapsed and re-anchor if they diverge
-by more than a few seconds. This also handles within-track needle drops.
+**Fixed:** as proposed — `_maybe_reanchor` compares the measured `offset_s` of
+confirming frames against the predicted elapsed and re-anchors when they
+diverge, which also handles within-track needle drops.
 
-### 3. Album layout cache not invalidated on ingest
+### 3. Album layout cache not invalidated on ingest — ✅ fixed (bdd72c1)
 
 `update_track`, `apply_discogs`, and the delete paths all call
 `clear_album_cache`, but `/ingest` and `/ingest/bulk` don't
@@ -89,7 +74,7 @@ by more than a few seconds. This also handles within-track needle drops.
 while it's playing leaves `expected_next_track_ids()` and side progress on the
 stale layout until restart. One-line fix at each ingest site.
 
-### Doc/coupling nits
+### Doc/coupling nits — ✅ fixed (f970b97)
 
 - CLAUDE.md says `min_count=15`; the actual default is 6
   (`server/app/config.py:18`).
@@ -100,7 +85,7 @@ stale layout until restart. One-line fix at each ingest site.
 
 ## Better matching (fingerprint quality)
 
-### No threshold spreading in `find_peaks`
+### No threshold spreading in `find_peaks` — ✅ fixed (3420af4)
 
 audfprint raises the threshold envelope with a Gaussian *around* each accepted
 peak; here `threshold[freq] = val` touches only the exact bin
@@ -112,7 +97,15 @@ weaker-earlier/stronger-later case within ±3 bins.
 Spreading the threshold over ±3–4 bins with a decaying profile is probably the
 single best quality/size improvement available.
 
-### Multiplicative prune margin on log values
+**Fixed:** audfprint-faithful spreading — a narrow ±3–4-bin kernel turned out
+to suppress almost nothing (the kernel is multiplicative on log magnitudes),
+so the implementation uses audfprint's own Gaussian SD of 30 bins
+(`spread_sd` in config) plus warm-up threshold seeding from the first ~10
+frames. Hash density on a music-like test signal dropped ~13x (623 → 48
+hashes/sec), landing at the audfprint design target that `min_count=6`
+assumes. Requires re-ingesting the library.
+
+### Multiplicative prune margin on log values — ✅ fixed (3420af4)
 
 The backward prune's `val * 1.5` (`server/app/fingerprint.py:90`) multiplies a
 *log*-magnitude — "1.5× the log" is a much harsher bar for strong peaks than
@@ -127,31 +120,28 @@ are heavily tested.
 
 ## Less resource usage (ordered by impact)
 
-1. **3.3× redundant fingerprinting.** The client posts its full 10s buffer
-   every 3s, so the server STFTs/peak-picks every audio second ~3.3 times. The
-   overlap buys match robustness, but even trimming to an 8s window cuts
-   steady-state CPU ~20% for free.
-2. **Client sends native-rate audio (44.1/48 kHz)** —
-   `client/android/.../AudioCaptureManager.kt:71` — so every chunk is ~880 KB
-   (~2.4 Mbps) and the server runs `librosa.resample` on 10s of audio every 3s.
-   Decimating to 11025 Hz on-device cuts payload 4× and removes the server
-   resample entirely.
-3. **`find_peaks` is pure Python** — ~110k inner iterations per 10s chunk,
-   ~26M for a 40-minute album ingest. The column loop must stay sequential
-   (threshold decay), but the frequency loop vectorizes cleanly:
-   `mask = (f[1:-1] > f[:-2]) & (f[1:-1] > f[2:]) & (f[1:-1] > thr[1:-1])`,
-   then top-5 by value. Expect 10–30× on the hottest function. Same idea for
-   `compute_spectrogram`: replace the per-row `lfilter` loop with one
-   `lfilter(b, a, sgram, axis=1)` call.
-4. **Stoplist goes stale.** Built once at startup (`server/app/main.py:102`),
-   so hashes that become too common after a big ingest aren't filtered until
-   restart. Rebuild in the background after bulk ingest.
-5. **Optional: in-RAM hash index.** For a personal catalog (~10–20M hashes ≈
-   120–240 MB as int32 triplets), loading the hash table into hash-sorted numpy
-   arrays at startup and using `searchsorted` removes SQLite (and the per-row
-   Python streaming in `lookup_hashes_flat`) from the hot path entirely. Only
-   worth it if match latency actually becomes a problem — the voting math is
-   already the fast part.
+1. **3.3× redundant fingerprinting** — ⏳ open (deliberately). The client
+   posts its full 10s buffer every 3s, so the server STFTs/peak-picks every
+   audio second ~3.3 times. The overlap buys match robustness, but even
+   trimming to an 8s window cuts steady-state CPU ~20% for free.
+2. **Client sends native-rate audio (44.1/48 kHz)** — ✅ fixed (d7f3447).
+   Every chunk was ~880 KB (~2.4 Mbps) and the server ran `librosa.resample`
+   on 10s of audio every 3s. The Android client now decimates to 11025 Hz
+   on-device (FIR anti-alias + ÷4), cutting payload 4× and removing the
+   server resample; a settings toggle reverts to native-rate audio.
+3. **`find_peaks` is pure Python** — ✅ fixed (03ae8c0). The frequency loop is
+   vectorized (the column loop stays sequential for threshold decay), and
+   `compute_spectrogram` filters all rows in one `lfilter(b, a, sgram, axis=1)`
+   call.
+4. **Stoplist goes stale** — ✅ fixed (6fcb349). Was built once at startup, so
+   hashes that became too common after a big ingest weren't filtered until
+   restart. Now rebuilt in the background after bulk ingest.
+5. **Optional: in-RAM hash index** — ⏳ skipped (deliberately). For a personal
+   catalog (~10–20M hashes ≈ 120–240 MB as int32 triplets), loading the hash
+   table into hash-sorted numpy arrays at startup and using `searchsorted`
+   would remove SQLite from the hot path entirely. Only worth it if match
+   latency actually becomes a problem — even less likely now that threshold
+   spreading shrank the hash table ~13x.
 
 ## Expected-next logic
 
@@ -159,21 +149,19 @@ The hint mechanism is sound: hinted tracks ride along below `min_count`, the
 `MIN_PROMOTE_SCORE` filter keeps hint junk out of the stability buffer, and the
 evidence-streak expiry is carefully tested. Two refinements:
 
-- **The sequential shortcut only inspects `candidates[0]`**
-  (`server/app/state.py:345`). If a random cross-album track outscores the true
-  next track by one vote during the between-track gap, the shortcut is lost even
-  though the hinted next track qualifies — falling back to the slower 2-of-3
-  stability path. Scanning candidates for *any* sequential track ≥
-  `MIN_SEQUENTIAL_SCORE` (perhaps within some factor of the top score) would
-  make side flips and track transitions snappier.
-- **`confidence` can be inflated by hint junk.** It's computed as top/second
-  (`server/app/matcher.py:179-182`), where "second" can be a hint-injected
-  1-vote entry. Display-only; compute it against the best *non-hinted*
-  runner-up.
+- **The sequential shortcut only inspects `candidates[0]`** — ✅ fixed
+  (7a78c77). If a random cross-album track outscored the true next track by
+  one vote during the between-track gap, the shortcut was lost even though the
+  hinted next track qualified. The promote path now scans candidates at any
+  rank for a qualifying sequential track, making side flips and track
+  transitions snappier.
+- **`confidence` can be inflated by hint junk** — ✅ fixed (8e71577). It was
+  computed as top/second, where "second" could be a hint-injected 1-vote
+  entry; it's now computed against the best *organic* (non-hinted) runner-up.
 
 ## Suggested priority
 
-1. Fix the `finished_track` race, anchor re-sync, and ingest cache invalidation.
-2. Vectorize `find_peaks` + single-call `lfilter` (cheap, big CPU win).
-3. Add threshold spreading (quality + DB size).
-4. Client-side downsampling and/or smaller listen window.
+1. ✅ Fix the `finished_track` race, anchor re-sync, and ingest cache invalidation.
+2. ✅ Vectorize `find_peaks` + single-call `lfilter` (cheap, big CPU win).
+3. ✅ Add threshold spreading (quality + DB size) — then re-ingest the library.
+4. ✅ Client-side downsampling; ⏳ smaller listen window left open.
