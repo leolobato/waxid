@@ -161,6 +161,52 @@ def test_ingest_and_list(client):
     assert tracks[0]["album_id"] == album_id
 
 
+def test_reingest_replaces_track_instead_of_duplicating(client):
+    """Re-ingesting the same track (same album + track name) must replace its
+    hashes and refresh metadata in place, so re-running ingest.py after a
+    fingerprint algorithm change re-fingerprints the library without
+    duplicating tracks."""
+    r = client.post("/albums", json={"artist": "Test", "name": "Album"})
+    album_id = r.json()["album_id"]
+    metadata = json.dumps({
+        "album_id": album_id, "artist": "Test", "album": "Album",
+        "track": "Song", "side": "A", "position": "A1",
+    })
+    r1 = client.post("/ingest", files={"file": ("a.wav", _make_wav(), "audio/wav")},
+                     data={"metadata": metadata})
+    hashes_before = client.get("/health").json()["hashes_count"]
+
+    # Second ingest: same track name, different audio, no side/position.
+    metadata2 = json.dumps({
+        "album_id": album_id, "artist": "Test", "album": "Album",
+        "track": "Song", "duration_s": 5.0,
+    })
+    r2 = client.post("/ingest", files={"file": ("a.wav", _make_wav(freq=550.0), "audio/wav")},
+                     data={"metadata": metadata2})
+    assert r2.json()["track_id"] == r1.json()["track_id"]
+
+    tracks = client.get("/tracks").json()
+    assert len(tracks) == 1
+    track = tracks[0]
+    assert track["side"] == "A"          # curated fields survive omission
+    assert track["position"] == "A1"
+    assert track["duration_s"] == 5.0    # provided fields are refreshed
+
+    # Hashes were replaced, not appended.
+    hashes_after = client.get("/health").json()["hashes_count"]
+    assert 0 < hashes_after < 2 * hashes_before
+
+
+def test_bulk_reingest_does_not_duplicate_tracks(client):
+    wav = _make_wav()
+    for _ in range(2):
+        r = client.post("/ingest/bulk", files=[("files", ("Artist - Album - Song.wav", wav, "audio/wav"))])
+        assert r.status_code == 200
+        _bulk_ingest_done(r)
+    tracks = client.get("/tracks").json()
+    assert len(tracks) == 1
+
+
 def test_match_after_ingest(client):
     r = client.post("/albums", json={"artist": "Test", "name": "Album"})
     album_id = r.json()["album_id"]
