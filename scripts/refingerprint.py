@@ -17,14 +17,80 @@ import argparse
 import csv
 import json
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
 
 import requests
 
+from mutagen import File as MutagenFile
+
 from ingest import discover_audio_files, extract_metadata
+
+
+FILENAME_RE = re.compile(r"^\s*\d+[\s.\-_]+(.+)$")
+
+
+def extract_meta(file_path: Path) -> dict | None:
+    """extract_metadata plus MP4 atom support and a filename fallback, so
+    m4a-only albums (whose tags ingest.py's helper can't read) still match."""
+    meta = extract_metadata(file_path)
+    if meta is not None:
+        return meta
+    audio = MutagenFile(str(file_path))
+    tags = getattr(audio, "tags", None) or {}
+
+    def tag(key):
+        val = tags.get(key)
+        return str(val[0]) if val else None
+
+    track = tag("\xa9nam")
+    number = None
+    if tags.get("trkn"):
+        number = tags["trkn"][0][0]
+    if not track:
+        m = FILENAME_RE.match(file_path.stem)
+        if not m:
+            return None
+        track = m.group(1).strip()
+        if number is None:
+            number = int(re.match(r"\s*(\d+)", file_path.stem).group(1))
+    duration = None
+    if audio is not None and audio.info is not None:
+        duration = round(audio.info.length, 1)
+    return {
+        "artist": tag("\xa9ART") or tag("aART") or "",
+        "album": tag("\xa9alb") or "Unknown Album",
+        "track": track,
+        "track_number": number,
+        "year": None,
+        "duration_s": duration,
+    }
+
+
+def discover_files(folder: Path) -> list[Path]:
+    """flac/mp3 via ingest.py's discovery; fall back to m4a-only folders
+    (transcoded locally before upload — the server can't decode AAC)."""
+    files = discover_audio_files(folder)
+    if not files:
+        files = sorted(f for f in folder.iterdir()
+                       if f.is_file() and f.suffix.lower() == ".m4a")
+    return files
+
+
+def read_upload(file_path: Path) -> tuple[str, bytes]:
+    """Return (filename, bytes) to upload, transcoding m4a to WAV."""
+    if file_path.suffix.lower() == ".m4a":
+        with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(file_path), tmp.name],
+                check=True, capture_output=True,
+            )
+            return file_path.stem + ".wav", Path(tmp.name).read_bytes()
+    return file_path.name, file_path.read_bytes()
 
 
 def norm_title(s: str) -> str:
@@ -34,7 +100,9 @@ def norm_title(s: str) -> str:
 
 def match_track(meta: dict, db_tracks: list[dict], claimed: set[int]) -> dict | None:
     """Match a file's tags to an unclaimed DB track: exact title, then
-    normalized title, then unique track number."""
+    normalized title, then normalized with the file title's trailing
+    parenthetical stripped (e.g. "(Album Version)", "(1981)"), then unique
+    track number."""
     available = [t for t in db_tracks if t["track_id"] not in claimed]
     for t in available:
         if t["track"] == meta["track"]:
@@ -43,6 +111,12 @@ def match_track(meta: dict, db_tracks: list[dict], claimed: set[int]) -> dict | 
     matches = [t for t in available if norm_title(t["track"]) == normed]
     if len(matches) == 1:
         return matches[0]
+    stripped = re.sub(r"\s*\([^)]*\)\s*$", "", meta["track"])
+    if stripped and stripped != meta["track"]:
+        stripped_norm = norm_title(stripped)
+        matches = [t for t in available if norm_title(t["track"]) == stripped_norm]
+        if len(matches) == 1:
+            return matches[0]
     if meta.get("track_number") is not None:
         matches = [t for t in available if t["track_number"] == meta["track_number"]]
         if len(matches) == 1:
@@ -93,7 +167,7 @@ def main():
         album = r.json()
         db_tracks = album["tracks"]
 
-        audio_files = discover_audio_files(folder)
+        audio_files = discover_files(folder)
         if not audio_files:
             skipped_albums.append(f"{label}: no audio files in {folder}")
             stats["albums_skipped"] += 1
@@ -103,7 +177,22 @@ def main():
         print(f"\n{label} — {len(audio_files)} files, {len(db_tracks)} DB tracks", flush=True)
         claimed: set[int] = set()
         for i, file_path in enumerate(audio_files, 1):
-            meta = extract_metadata(file_path)
+            # SMB mounts occasionally throw transient EBADF/EIO — retry the
+            # tag read a few times before counting the file as failed.
+            meta = None
+            for attempt in range(3):
+                try:
+                    meta = extract_meta(file_path)
+                    break
+                except OSError as e:
+                    if attempt == 2:
+                        stats["failed"] += 1
+                        unmatched_files.append(f"{label}: {file_path.name} (read error: {e})")
+                        print(f"  [{i}/{len(audio_files)}] READ ERROR: {file_path.name}: {e}", flush=True)
+                    else:
+                        time.sleep(2 * (attempt + 1))
+            else:
+                continue
             if meta is None:
                 unmatched_files.append(f"{label}: {file_path.name} (no tags)")
                 print(f"  [{i}/{len(audio_files)}] NO TAGS: {file_path.name}", flush=True)
@@ -129,18 +218,26 @@ def main():
                 "year": db_track["year"],
                 "duration_s": meta["duration_s"],
             }
-            try:
-                with open(file_path, "rb") as fh:
+            resp = None
+            for attempt in range(3):
+                try:
+                    upload_name, upload_bytes = read_upload(file_path)
                     resp = requests.post(
                         f"{args.server}/ingest",
-                        files={"file": (file_path.name, fh, "application/octet-stream")},
+                        files={"file": (upload_name, upload_bytes, "application/octet-stream")},
                         data={"metadata": json.dumps(payload)},
                         timeout=600,
                     )
-                resp.raise_for_status()
-            except Exception as e:
-                stats["failed"] += 1
-                print(f"  [{i}/{len(audio_files)}] FAILED {db_track['track']!r}: {e}", flush=True)
+                    resp.raise_for_status()
+                    break
+                except Exception as e:
+                    resp = None
+                    if attempt == 2:
+                        stats["failed"] += 1
+                        print(f"  [{i}/{len(audio_files)}] FAILED {db_track['track']!r}: {e}", flush=True)
+                    else:
+                        time.sleep(2 * (attempt + 1))
+            if resp is None:
                 continue
             result = resp.json()
             if result["track_id"] != db_track["track_id"]:
