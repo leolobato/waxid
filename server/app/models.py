@@ -25,6 +25,7 @@ class TrackMetadata(BaseModel):
     artist: str
     album: str
     track: str
+    track_id: int | None = None  # target an exact track for re-ingest (disambiguates duplicate titles)
     track_number: int | None = None
     year: int | None = None
     duration_s: float | None = None
