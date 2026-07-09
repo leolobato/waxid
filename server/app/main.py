@@ -488,7 +488,14 @@ async def ingest(file: UploadFile = File(...), metadata: str = Form(...)):
     # Re-ingesting an existing track (same album + track name) replaces its
     # fingerprints and refreshes any provided metadata instead of inserting a
     # duplicate — re-running ingest.py re-fingerprints the library in place.
-    existing = db.find_track(meta.album_id, meta.track)
+    # An explicit track_id targets an exact row (needed when an album repeats
+    # a track title and the name lookup is ambiguous).
+    if meta.track_id is not None:
+        existing = db.get_track(meta.track_id)
+        if not existing or existing["album_id"] != meta.album_id:
+            raise HTTPException(status_code=404, detail="track_id not found in album")
+    else:
+        existing = db.find_track(meta.album_id, meta.track)
     if existing:
         track_id = existing["track_id"]
         db.update_track(track_id, track_number=meta.track_number, year=meta.year,

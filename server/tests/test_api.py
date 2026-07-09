@@ -197,6 +197,38 @@ def test_reingest_replaces_track_instead_of_duplicating(client):
     assert 0 < hashes_after < 2 * hashes_before
 
 
+def test_reingest_with_track_id_targets_exact_row(client):
+    """When an album repeats a track title (e.g. a reprise), the name lookup is
+    ambiguous — an explicit track_id must replace exactly that row."""
+    r = client.post("/albums", json={"artist": "Test", "name": "Album"})
+    album_id = r.json()["album_id"]
+    ids = []
+    for _ in range(2):
+        meta = json.dumps({"album_id": album_id, "artist": "Test", "album": "Album", "track": "Reprise"})
+        r = client.post("/ingest", files={"file": ("a.wav", _make_wav(), "audio/wav")},
+                        data={"metadata": meta})
+        ids.append(r.json()["track_id"])
+    # Without track_id the second ingest hit the first row again.
+    assert ids[0] == ids[1]
+    second = client.post("/ingest", files={"file": ("b.wav", _make_wav(freq=550.0), "audio/wav")},
+                         data={"metadata": json.dumps({
+                             "album_id": album_id, "artist": "Test", "album": "Album",
+                             "track": "Reprise (second)"})}).json()["track_id"]
+    r = client.post("/ingest", files={"file": ("c.wav", _make_wav(freq=660.0), "audio/wav")},
+                    data={"metadata": json.dumps({
+                        "album_id": album_id, "track_id": second, "artist": "Test",
+                        "album": "Album", "track": "Reprise (second)"})})
+    assert r.json()["track_id"] == second
+
+    # A track_id from another album is rejected.
+    r2 = client.post("/albums", json={"artist": "Test", "name": "Other"})
+    r = client.post("/ingest", files={"file": ("d.wav", _make_wav(), "audio/wav")},
+                    data={"metadata": json.dumps({
+                        "album_id": r2.json()["album_id"], "track_id": second,
+                        "artist": "Test", "album": "Other", "track": "X"})})
+    assert r.status_code == 404
+
+
 def test_bulk_reingest_does_not_duplicate_tracks(client):
     wav = _make_wav()
     for _ in range(2):
