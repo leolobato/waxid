@@ -15,6 +15,7 @@ REANCHOR_THRESHOLD_S = 5.0   # re-sync the playback clock if measured offset dri
 BUFFER_SIZE = 3
 REQUIRED_MATCHES = 2
 GRACE_MISSES = 6
+END_CONFIRM_QUIET_S = 10.0   # clock-end waits until the track stops confirming this long
 IDLE_TIMEOUT_LISTENING_S = 10.0
 IDLE_TIMEOUT_PLAYING_S = 120.0
 MIN_EVIDENCE_SCORE = 6           # context-album raw score that counts as evidence
@@ -74,6 +75,7 @@ class NowPlayingService:
         self._ready_event = asyncio.Event()
         self._last_feed_time: float | None = None
         self._miss_count: int = 0
+        self._last_confirm_time: float | None = None
         self._album_layout_cache: dict[int, AlbumLayout] = {}
         self._no_evidence_streak: int = 0
         # Latest completed track, retained and stamped with a monotonic sequence
@@ -126,7 +128,12 @@ class NowPlayingService:
 
         elapsed = None
         if self._anchor_time is not None and self._anchor_offset is not None:
-            elapsed = round(self._anchor_offset + (time.time() - self._anchor_time), 1)
+            elapsed = self._anchor_offset + (time.time() - self._anchor_time)
+            if self._current.duration_s is not None:
+                # The clock can outrun the record (file duration vs. vinyl
+                # speed); pin the UI position at the end, never past it.
+                elapsed = min(elapsed, self._current.duration_s)
+            elapsed = round(elapsed, 1)
 
         tracks_on_side, is_last_on_side, sides = self._side_progress(self._current)
 
@@ -305,6 +312,7 @@ class NowPlayingService:
             self._current = None
             self._anchor_time = None
             self._anchor_offset = None
+            self._last_confirm_time = None
             self._status = "listening"
         if self._last_played is not None and self._last_played.album_id == album_id:
             self._last_played = None
@@ -316,6 +324,7 @@ class NowPlayingService:
             self._current = None
             self._anchor_time = None
             self._anchor_offset = None
+            self._last_confirm_time = None
             self._status = "listening"
         if self._last_played is not None and self._last_played.track_id == track_id:
             self._last_played = None
@@ -340,6 +349,7 @@ class NowPlayingService:
         )
         if current_alive:
             self._miss_count = 0
+            self._last_confirm_time = time.time()
 
         # Re-sync the playback clock when the current track confirms this frame.
         # The initial anchor is set once at promotion; without this, needle
@@ -447,6 +457,7 @@ class NowPlayingService:
         self._anchor_time = None
         self._anchor_offset = None
         self._miss_count = 0
+        self._last_confirm_time = None
         self._buffer.clear()
         self._no_evidence_streak = 0  # the expiry clock measures the gap, so it starts now
 
@@ -494,9 +505,18 @@ class NowPlayingService:
         if self._current is not None and self._current.track_id != candidate.track_id:
             self._mark_finished(self._current, self._current_elapsed())
         self._current = candidate
-        self._set_anchor(candidate.offset_s, recorded_at)
+        offset = candidate.offset_s
+        if candidate.score < MIN_PROMOTE_SCORE:
+            # Sequential-shortcut promotes ride scores below the promote bar,
+            # and a histogram peak built from so few votes can land anywhere
+            # in the track. The shortcut only fires when the next track just
+            # started, so anchor at the top and let _maybe_reanchor sync the
+            # clock from the first solidly-voted frame.
+            offset = 0.0
+        self._set_anchor(offset, recorded_at)
         self._status = "playing"
         self._miss_count = 0
+        self._last_confirm_time = time.time()
         self._no_evidence_streak = 0
         self._buffer.clear()
 
@@ -532,8 +552,17 @@ class NowPlayingService:
         if self._current.duration_s is None:
             return
         elapsed = self._anchor_offset + (time.time() - self._anchor_time)
-        if elapsed >= self._current.duration_s:
-            self._end_track()
+        if elapsed < self._current.duration_s:
+            return
+        # The clock can run a few seconds ahead of the record (file duration
+        # vs. vinyl speed, reanchor tolerance). While the track keeps
+        # confirming, trust the audio over the clock and hold "playing".
+        if (
+            self._last_confirm_time is not None
+            and (time.time() - self._last_confirm_time) < END_CONFIRM_QUIET_S
+        ):
+            return
+        self._end_track()
 
     def _end_track(self) -> None:
         # Reached full duration, so always >= the completion threshold.
@@ -542,6 +571,7 @@ class NowPlayingService:
         self._current = None
         self._anchor_time = None
         self._anchor_offset = None
+        self._last_confirm_time = None
         self._buffer.clear()
         self._no_evidence_streak = 0  # the expiry clock measures the gap, so it starts now
         if self._last_feed_time and (time.time() - self._last_feed_time) < IDLE_TIMEOUT_PLAYING_S:
@@ -564,6 +594,7 @@ class NowPlayingService:
             self._last_played = None
             self._anchor_time = None
             self._anchor_offset = None
+            self._last_confirm_time = None
             self._buffer.clear()
             self._no_evidence_streak = 0
             if old_status != "idle":

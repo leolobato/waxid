@@ -2,7 +2,7 @@ import asyncio
 import time
 import pytest
 from unittest.mock import patch
-from app.state import NowPlayingService
+from app.state import END_CONFIRM_QUIET_S, NowPlayingService
 from app.models import MatchCandidate, NowPlayingResponse
 
 
@@ -169,9 +169,39 @@ class TestPositionClock:
             await service.feed([c])
             assert service.get_state().status == "playing"
 
+            # Past duration but confirmed 2s ago: the audio wins over the
+            # clock, so the track holds "playing" with elapsed pinned at
+            # the end rather than running past it.
             mock_time.time.return_value = 1002.0
             state = service.get_state()
+            assert state.status == "playing"
+            assert state.elapsed_s == 180.0
+
+            # Once the track stops confirming for END_CONFIRM_QUIET_S,
+            # the clock-end goes through.
+            mock_time.time.return_value = 1000.0 + END_CONFIRM_QUIET_S + 1.0
+            state = service.get_state()
             assert state.status == "listening"
+
+    @pytest.mark.asyncio
+    async def test_weak_sequential_promote_anchors_at_track_start(self, sequential_service):
+        c1 = make_candidate(track_id=1, track_number=1)
+        with patch("app.state.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            await sequential_service.feed([c1])
+            await sequential_service.feed([c1])
+            assert sequential_service.get_state().track_id == 1
+
+            # Sequential shortcut fires below the promote bar; a histogram
+            # peak from so few votes is noise, so its offset must not anchor
+            # the clock deep into the track.
+            c2 = make_candidate(track_id=2, track_number=2, score=4,
+                                offset_s=170.0, duration_s=180.0)
+            await sequential_service.feed([c2])
+            state = sequential_service.get_state()
+            assert state.status == "playing"
+            assert state.track_id == 2
+            assert state.elapsed_s == 0.0
 
 
 class TestAnchorResync:
@@ -476,6 +506,9 @@ class TestFinishedSignal:
         svc._promote(cand)
         svc._anchor_offset = elapsed
         svc._anchor_time = time.time()
+        # The clock-end guard trusts recent confirmations over the clock;
+        # these scenarios model a track that already stopped confirming.
+        svc._last_confirm_time = time.time() - END_CONFIRM_QUIET_S
         return cand
 
     def test_natural_completion_reports_finished_track(self):

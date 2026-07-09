@@ -709,19 +709,34 @@ async def _listen_loop() -> None:
         _processing = False
 
 
+def _log_resolved_state(prev: NowPlayingResponse) -> None:
+    """Log what the state machine resolved to, at INFO when it changed."""
+    state = now_playing.get_state()
+    if state.status == "playing":
+        resolved = f"playing {state.artist} - {state.track} (track_id={state.track_id})"
+    else:
+        resolved = state.status
+    changed = (state.status, state.track_id) != (prev.status, prev.track_id)
+    log = logger.info if changed else logger.debug
+    log("Listen: state: %s", resolved)
+
+
 async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -> None:
     try:
         logger.debug("Listen: processing %d bytes", len(audio_bytes))
         start = time.time()
+        prev = now_playing.get_state()
         rms_dbfs = await asyncio.to_thread(compute_rms_dbfs, audio_bytes)
         if rms_dbfs < SILENCE_RMS_DBFS:
             await now_playing.feed([], recorded_at=recorded_at)
             logger.info("Listen: silence (rms=%.1f dBFS)", rms_dbfs)
+            _log_resolved_state(prev)
             return
         query_hashes = await asyncio.to_thread(fingerprint_audio, audio_bytes)
         if len(query_hashes) < HASH_MIN_COUNT:
             await now_playing.feed([], recorded_at=recorded_at)
             logger.info("Listen: low hash density (hashes=%d)", len(query_hashes))
+            _log_resolved_state(prev)
             return
         logger.debug("Listen: fingerprinted in %.1fms (%d hashes)", (time.time() - start) * 1000, len(query_hashes))
         hint_track_ids: set[int] = set()
@@ -737,15 +752,13 @@ async def _process_audio(audio_bytes: bytes, recorded_at: float | None = None) -
         if candidates:
             top = candidates[0]
             logger.info(
-                "Listen: %s - %s (score:%s, conf:%s, %.0fms)",
+                "Listen: possible match: %s - %s (score:%s, conf:%s, %.0fms)",
                 top.artist, top.track, top.score, top.confidence, elapsed_ms,
             )
         else:
             logger.info("Listen: no match (%.0fms)", elapsed_ms)
         await now_playing.feed(candidates, recorded_at=recorded_at)
-        state = now_playing.get_state()
-        logger.debug("Listen: status=%s%s", state.status,
-                     f", track_id={state.track_id}" if state.track_id else "")
+        _log_resolved_state(prev)
     except Exception:
         logger.exception("Listen error")
 
